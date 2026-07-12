@@ -82,7 +82,12 @@ def _iter_exes(path):
         head = f.read(4)
     if head[:4] == b"PK\x03\x04":
         with zipfile.ZipFile(path) as z:
-            exes = [n for n in z.namelist() if n.lower().endswith(".exe")]
+            exes = [
+                n for n in z.namelist()
+                if n.lower().endswith(".exe")
+                and not n.startswith("__MACOSX/")
+                and not n.rsplit("/", 1)[-1].startswith("._")
+            ]
             if len(exes) != 1:
                 raise ValueError(f"ZIP 内 EXE が {len(exes)} 個（1 個であること）")
             with z.open(exes[0]) as fh:

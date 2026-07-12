@@ -45,17 +45,43 @@ class ExtractRejectTest(unittest.TestCase):
     # 拒否は、_read_resource_manager を使った合成 .resources を組み立てて検証する。
     # 実装時に、既知の 1 リソース分のバイト列を生成するヘルパ（下記 make_resources）を用意し、
     # 同名2エントリ／type_code!=0x20 の各ケースで extract_from_exe が raise することを確認する。
+    #
+    # 例外の型だけでなくメッセージ部分文字列でも判別することで、パーサが壊れて別理由の
+    # ValueError（例: 「抽出できない」）にすり替わっても検出できるようにする。
     def test_reject_duplicate_and_wrong_type(self):
         from tests.helpers import make_resources  # 実装時に用意する合成ヘルパ
         dup = make_resources([("code_2M", 0x20, b"\x00" * 2097152),
                               ("code_2M", 0x20, b"\x00" * 2097152),
                               ("param_128K", 0x20, b"\x00" * 131072)])
-        with self.assertRaises(Exception):
+        with self.assertRaisesRegex(ValueError, "一意でない"):
             fw.extract_from_exe(self._tmp("dup.exe", b"MZ" + dup))
         wrongtype = make_resources([("code_2M", 0x01, b"\x00" * 2097152),
                                     ("param_128K", 0x20, b"\x00" * 131072)])
-        with self.assertRaises(Exception):
+        with self.assertRaisesRegex(ValueError, "型/長さ"):
             fw.extract_from_exe(self._tmp("wt.exe", b"MZ" + wrongtype))
+
+    def test_roundtrip_extract_from_synthetic(self):
+        # 実機 exe が無くても、合成 .resources ラウンドトリップでパーサ成功パスを守る。
+        # ここが壊れれば（例: _read_resource_manager のオフセット計算ミス）検出できる。
+        from tests.helpers import make_resources
+        res = make_resources([("code_2M", 0x20, b"\xAB" * 2097152),
+                              ("param_128K", 0x20, b"\xCD" * 131072)])
+        got = fw.extract_from_exe(self._tmp("ok.exe", b"MZ" + res))
+        self.assertEqual(got["code_2m"], b"\xAB" * 2097152)
+        self.assertEqual(got["param_128k"], b"\xCD" * 131072)
+
+    def test_zip_single_exe_ignores_appledouble(self):
+        # macOS 由来の __MACOSX/._<name>.exe ゴーストエントリを無視し、
+        # 実体の .exe 1個として抽出できることを確認する（Critical#1 の回帰防止）。
+        from tests.helpers import make_resources
+        res = make_resources([("code_2M", 0x20, b"\xAB" * 2097152),
+                              ("param_128K", 0x20, b"\xCD" * 131072)])
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("__MACOSX/._x.exe", b"junk")   # ゴースト（無視されるべき）
+            z.writestr("x.exe", b"MZ" + res)
+        got = fw.extract_from_exe(self._tmp("ok.zip", buf.getvalue()))
+        self.assertEqual(len(got["code_2m"]), 2097152)
 
 if __name__ == "__main__":
     unittest.main()
