@@ -146,9 +146,18 @@ def do_check(args, body):
 
 
 def _post_flash_verify(args, expected_crc, retry_seconds=10.0, interval=1.0):
+    """書込後の再列挙・CRC 照合を期限内リトライで確認する。
+
+    再起動直後の一瞬に旧ファーム側の整合応答が観測されるケースがあるため、
+    CRC 不一致は即 FAIL にせず、期限（retry_seconds）内は再列挙→再open→
+    再照会を繰り返す。一度でも期待CRCと一致すれば即成功。期限切れまで
+    一度も一致しなければ FAIL とし、最後に観測した CRC を提示する。
+    （retry_seconds/interval の既定値は Task 8 の実機検証で調整の余地あり）
+    """
     print(f"[*] 転送成功。デバイス再列挙で CRC を照合します（期待値=0x{expected_crc:08X}）。")
     deadline = time.time() + retry_seconds
     last_err = None
+    last_seen_crc = None
     while time.time() < deadline:
         try:
             cands = hid.find_ota_devices(C.USAGE_PAGE)
@@ -165,11 +174,14 @@ def _post_flash_verify(args, expected_crc, retry_seconds=10.0, interval=1.0):
                     parsed = T.parse_version(resp[1])
                     if parsed is not None:
                         _version, crc = parsed
+                        last_seen_crc = crc
                         if crc == expected_crc:
                             print(f"[PASS] 書き込み後のバージョン照会で CRC 一致を確認（0x{crc:08X}）。")
                             return 0
-                        print(f"[FAIL] CRC 不一致: 実機=0x{crc:08X} 期待=0x{expected_crc:08X}")
-                        return 44
+                        print(
+                            f"[*] CRC 不一致（再列挙直後の一時応答の可能性）: "
+                            f"実機=0x{crc:08X} 期待=0x{expected_crc:08X}。リトライを継続します。"
+                        )
             except Exception as e:
                 last_err = e
             finally:
@@ -178,8 +190,14 @@ def _post_flash_verify(args, expected_crc, retry_seconds=10.0, interval=1.0):
                 except Exception:
                     pass
         time.sleep(interval)
-    suffix = f"（直前のエラー: {last_err}）" if last_err else ""
-    print(f"[FAIL] {retry_seconds:.0f} 秒以内に再列挙後のバージョン照会で確認できませんでした。{suffix}")
+    if last_seen_crc is not None:
+        print(
+            f"[FAIL] {retry_seconds:.0f} 秒以内に期待CRCを確認できませんでした。"
+            f"最後に観測: 0x{last_seen_crc:08X} / 期待: 0x{expected_crc:08X}"
+        )
+    else:
+        suffix = f"（直前のエラー: {last_err}）" if last_err else ""
+        print(f"[FAIL] {retry_seconds:.0f} 秒以内に再列挙後のバージョン照会で確認できませんでした。{suffix}")
     return 45
 
 
