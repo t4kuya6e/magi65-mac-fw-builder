@@ -6,8 +6,11 @@ def make_body(n_chunks):
     return (bytes(range(256)) * ((n_chunks * 16) // 256 + 1))[:n_chunks * 16]
 
 class BuilderTest(unittest.TestCase):
-    def test_crc16_self_consistent(self):
-        self.assertEqual(fw.crc16(b"\x00\x00" + b"\x00" * 16), fw.crc16(bytes(18)))
+    def test_crc16_known_vectors(self):
+        # OTA_PROTOCOL.md §8: index0 の addr(0000)+data(16) 18バイトに対する CRC16
+        self.assertEqual(fw.crc16(bytes.fromhex("000025a0000000005d020000000000000000")), 0xCC80)
+        # index1 の addr(0100)+data(16)
+        self.assertEqual(fw.crc16(bytes.fromhex("0100000000000000000074f6010000000000")), 0x11B1)
 
     def test_data_packet_structure(self):
         body = make_body(3)
@@ -16,6 +19,26 @@ class BuilderTest(unittest.TestCase):
         self.assertEqual(pkt[0] | (pkt[1] << 8), 1)               # addr = index (LE)
         self.assertEqual(pkt[2:18], body[16:32])                  # data
         self.assertEqual(pkt[18] | (pkt[19] << 8), fw.crc16(pkt[:18]))  # crc
+
+    def test_data_packet_known_vectors(self):
+        body = bytes.fromhex("25a0000000005d020000000000000000"
+                             "000000000000000074f6010000000000")  # index0,1 の32バイト
+        self.assertEqual(fw.data_packet(body, 0),
+                         bytes.fromhex("000025a0000000005d02000000000000000080cc"))
+        self.assertEqual(fw.data_packet(body, 1),
+                         bytes.fromhex("0100000000000000000074f6010000000000b111"))
+
+    def test_source_bin_size_and_extract(self):
+        size = 100
+        code = bytearray(256 + size)
+        code[48:52] = size.to_bytes(4, "big")            # BE サイズフィールド
+        for i in range(size):
+            code[256 + i] = i & 0xFF
+        self.assertEqual(fw.source_bin_size(bytes(code)), size)
+        body = fw.extract_firmware(bytes(code))
+        self.assertEqual(len(body), size + ((-size) % 16))   # 16B境界パディング
+        self.assertEqual(body[:size], bytes(code[256:256 + size]))
+        self.assertEqual(body[size:], b"\xff" * ((-size) % 16))  # 末尾は 0xFF パディング
 
     def test_start_report(self):
         r = fw.start_report(64)
