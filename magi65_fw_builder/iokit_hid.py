@@ -133,6 +133,12 @@ def find_ota_devices(usage_page=USAGE_PAGE):
     mgr = iokit.IOHIDManagerCreate(None, 0)
     iokit.IOHIDManagerSetDeviceMatching(mgr, None)
     devset = iokit.IOHIDManagerCopyDevices(mgr)
+    # 注意: ここで mgr / devset を CFRelease しないのは意図的。
+    # devset(CFSet) が各 IOHIDDevice を暗黙 retain しており、
+    # それが返した dev ハンドルの生存を保証している。
+    # リーク対策で CFRelease を足す場合は、返す各 dev に必ず CFRetain し、
+    # OtaDevice.close() に対応する CFRelease を追加すること
+    # （さもないと open 時に解放済み参照で UAF になる）。
     if not devset:
         return []
     n = cf.CFSetGetCount(devset)
