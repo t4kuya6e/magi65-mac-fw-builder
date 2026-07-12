@@ -30,9 +30,11 @@ def data_packet(body: bytes, index: int) -> bytes:
 
 def _frame(payload: bytes, report_len: int) -> bytes:
     if report_len < MIN_REPORT_LEN:
-        raise ValueError(f"report_len must be >= {MIN_REPORT_LEN}: {report_len}")
+        raise ValueError(f"report_len は {MIN_REPORT_LEN} 以上である必要があります: {report_len}")
     if len(payload) > report_len - 1:
-        raise ValueError(f"payload {len(payload)}B exceeds report_len-1")
+        raise ValueError(
+            f"payload({len(payload)}B) が report_len-1({report_len - 1}B) を超過"
+        )
     sen = bytearray(b"\xff" * (report_len - 1))
     sen[:len(payload)] = payload
     return bytes([REPORT_ID]) + bytes(sen)

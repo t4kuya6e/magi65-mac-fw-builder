@@ -104,8 +104,8 @@ def select_unique_device(usage_page):
 
 def verify_connected_identity(dev):
     """open 済みデバイスの実 VID/PID が MAGI65_TUPLE と一致するかを確認する。"""
-    vid = hid._int_prop(dev.cf, dev.iokit, dev.dev, "VendorID")
-    pid = hid._int_prop(dev.cf, dev.iokit, dev.dev, "ProductID")
+    vid = dev.vendor_id()
+    pid = dev.product_id()
     if vid != C.VID or pid != C.PID:
         raise ValueError(
             f"接続デバイスの VID/PID が不一致: ({vid!r},{pid!r}) != "
@@ -221,29 +221,31 @@ def do_flash(args, body, expected_crc):
     dev = hid.OtaDevice(cand["dev"], timeout=args.timeout)
     caffeinate = None
     try:
-        dev.open()
-        verify_connected_identity(dev)
-        print(f"[*] max_output_report={dev.max_output_report} max_input_report={dev.max_input_report}")
-        if not fw.flash_report_len_ok(args.report_len, dev.max_output_report):
-            print(
-                f"[FAIL] --report-len({args.report_len}) がデバイスの "
-                f"max_output_report({dev.max_output_report}) と不一致。中止。"
-            )
-            return 43
         caffeinate = subprocess.Popen(["caffeinate", "-dims", "-w", str(os.getpid())])
-        rc = T.run_transfer(dev, body, args.report_len, log=print)
-        if rc != 0:
-            print(f"[FAIL] 転送が失敗しました（code={rc}）。")
-            return rc
+        try:
+            dev.open()
+            verify_connected_identity(dev)
+            print(f"[*] max_output_report={dev.max_output_report} max_input_report={dev.max_input_report}")
+            if not fw.flash_report_len_ok(args.report_len, dev.max_output_report):
+                print(
+                    f"[FAIL] --report-len({args.report_len}) がデバイスの "
+                    f"max_output_report({dev.max_output_report}) と不一致。中止。"
+                )
+                return 43
+            rc = T.run_transfer(dev, body, args.report_len, log=print)
+            if rc != 0:
+                print(f"[FAIL] 転送が失敗しました（code={rc}）。")
+                return rc
+        finally:
+            try:
+                dev.close()
+            except Exception:
+                pass
+
+        return _post_flash_verify(args, expected_crc)
     finally:
         if caffeinate is not None:
             caffeinate.terminate()
-        try:
-            dev.close()
-        except Exception:
-            pass
-
-    return _post_flash_verify(args, expected_crc)
 
 
 def main(argv=None):

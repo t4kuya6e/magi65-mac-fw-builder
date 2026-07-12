@@ -218,6 +218,14 @@ class OtaDevice:
         self.cf.CFRunLoopRunInMode(self._mode, c_double(self.timeout), False)
         return self._last
 
+    def vendor_id(self):
+        """接続中デバイスの実 VendorID（プロパティ未提供時は None）。"""
+        return _int_prop(self.cf, self.iokit, self.dev, "VendorID")
+
+    def product_id(self):
+        """接続中デバイスの実 ProductID（プロパティ未提供時は None）。"""
+        return _int_prop(self.cf, self.iokit, self.dev, "ProductID")
+
     def close(self):
         if self.dev:
             # runloop から外してからクローズ。残留コールバックが後続 send_and_wait 中に
