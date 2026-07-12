@@ -1,7 +1,7 @@
 """転送制御（transfer control flow）。
 Task 5: START/DATA/END の送受信と ACK 検証、バージョン照会ゲート。
 """
-from .constants import REPORT_ID
+from .constants import REPORT_ID, CHUNK
 from .firmware import start_report, data_report, end_report, version_query_report
 
 def parse_version(data):
@@ -33,7 +33,11 @@ def ack_is_echo(sent: bytes, resp) -> bool:
     return rid == REPORT_ID and len(data) >= len(sent) and bytes(data[:len(sent)]) == bytes(sent)
 
 def run_transfer(dev, body, report_len, log=print):
-    n_chunks = len(body) // 16
+    if len(body) % CHUNK != 0:
+        # 16 の倍数でない body は末尾を無警告で切り捨てると書込不足が成功扱いになる。
+        # デバイスに一切送信する前に中止する。
+        raise ValueError(f"body length {len(body)} is not a multiple of CHUNK({CHUNK})")
+    n_chunks = len(body) // CHUNK
     # ReportID 能力の実地確認（spec High#1 残）: START 前にバージョン照会往復。
     # rid==5 かつ完全な固定ヘッダの応答のみ合格（レビュー指摘 High#5）。
     vq = version_query_report(report_len)

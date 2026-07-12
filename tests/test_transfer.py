@@ -18,8 +18,10 @@ def classify(r):
     return "?"
 
 class FakeDevice:
-    def __init__(self, bad_version=False, fail_at=None):
+    def __init__(self, bad_version=False, fail_at=None,
+                 wrong_version_rid=False, wrong_end_rid=False):
         self.bad_version = bad_version; self.fail_at = fail_at
+        self.wrong_version_rid = wrong_version_rid; self.wrong_end_rid = wrong_end_rid
         self.sent = []; self.addrs = []; self.packets = []; self._n = 0
     def send_and_wait(self, report):
         self._n += 1
@@ -28,7 +30,8 @@ class FakeDevice:
             if self.bad_version:
                 return None
             # report_id 込みの完全な固定ヘッダ 05 01 08 00 <ver4> <crc4>
-            return (5, bytes.fromhex("0501080000000000a40f0201") + b"\x00" * 52)
+            rid = 0x99 if self.wrong_version_rid else 5
+            return (rid, bytes.fromhex("0501080000000000a40f0201") + b"\x00" * 52)
         if k == "DATA":
             cnt = report[2] // 20
             for j in range(cnt):
@@ -39,8 +42,58 @@ class FakeDevice:
         if self._n == self.fail_at:
             return (5, b"\x05" + b"\x00" * 63)  # エコー不一致（全長だが内容違い）
         if k == "END":
-            return (5, bytes.fromhex("0502030006ff00") + b"\x00" * 57)
+            rid = 0x99 if self.wrong_end_rid else 5
+            return (rid, bytes.fromhex("0502030006ff00") + b"\x00" * 57)
         return (5, bytes(report))       # 正常 ACK = 送信レポート全体のエコー
+
+class ParseVersionTest(unittest.TestCase):
+    def test_embedded_form_valid(self):
+        # report_id 込み: 05 01 08 00 <ver4LE> <crc4LE>
+        ver, crc = 1234, 5678
+        data = bytes([0x05, 0x01, 0x08, 0x00]) + ver.to_bytes(4, "little") + crc.to_bytes(4, "little")
+        self.assertEqual(T.parse_version(data), (ver, crc))
+
+    def test_stripped_form_valid(self):
+        # report_id 剥がし: 01 08 00 <ver4LE> <crc4LE>
+        ver, crc = 1234, 5678
+        data = bytes([0x01, 0x08, 0x00]) + ver.to_bytes(4, "little") + crc.to_bytes(4, "little")
+        self.assertEqual(T.parse_version(data), (ver, crc))
+
+    def test_broken_fixed_byte_returns_none(self):
+        # index3 が 0x00 でない（embedded 判定も stripped 判定も外れる）
+        ver, crc = 1234, 5678
+        data = bytes([0x05, 0x01, 0x08, 0x01]) + ver.to_bytes(4, "little") + crc.to_bytes(4, "little")
+        self.assertIsNone(T.parse_version(data))
+
+    def test_too_short_returns_none(self):
+        data = bytes([0x05, 0x01, 0x08, 0x00, 0x01, 0x02, 0x03])
+        self.assertIsNone(T.parse_version(data))
+
+    def test_unrelated_bytes_returns_none(self):
+        data = bytes(range(20))
+        self.assertIsNone(T.parse_version(data))
+
+
+class ParseCompletionTest(unittest.TestCase):
+    def test_embedded_form_valid(self):
+        # report_id 込み: 05 02 03 00 06 FF <result>
+        data = bytes([0x05, 0x02, 0x03, 0x00, 0x06, 0xFF, 0x07])
+        self.assertEqual(T.parse_completion(data), 7)
+
+    def test_stripped_form_valid(self):
+        # report_id 剥がし: 02 03 00 06 FF <result>
+        data = bytes([0x02, 0x03, 0x00, 0x06, 0xFF, 0x07])
+        self.assertEqual(T.parse_completion(data), 7)
+
+    def test_broken_fixed_byte_returns_none(self):
+        # index4 が 0x06 でない（embedded 判定も stripped 判定も外れる）
+        data = bytes([0x05, 0x02, 0x03, 0x00, 0x07, 0xFF, 0x07])
+        self.assertIsNone(T.parse_completion(data))
+
+    def test_too_short_returns_none(self):
+        data = bytes([0x05, 0x02, 0x03])
+        self.assertIsNone(T.parse_completion(data))
+
 
 class TransferTest(unittest.TestCase):
     def test_normal_flow(self):
@@ -72,6 +125,27 @@ class TransferTest(unittest.TestCase):
         # rid が 5 以外の ACK は内容が一致しても不合格（レビュー指摘 3巡#Medium2）
         s = b"\x05\x02\x02\x00\x01\xff" + b"\xff" * 58
         self.assertFalse(T.ack_is_echo(s, (0x99, s)))
+
+    def test_wrong_version_rid_aborts_before_start(self):
+        # バージョン応答の rid が 5 以外だと START を送らず中止する
+        dev = FakeDevice(wrong_version_rid=True)
+        rc = T.run_transfer(dev, make_body(9), 64, log=lambda *a: None)
+        self.assertEqual(rc, 20)
+        self.assertNotIn("START", dev.sent)
+
+    def test_wrong_end_rid_aborts(self):
+        # END 応答の rid が 5 以外だと該当エラーコードで中止する
+        dev = FakeDevice(wrong_end_rid=True)
+        rc = T.run_transfer(dev, make_body(9), 64, log=lambda *a: None)
+        self.assertEqual(rc, 15)
+
+    def test_unpadded_body_raises_before_any_send(self):
+        # 16 の倍数でない body は ValueError で、デバイスには何も送信しない
+        dev = FakeDevice()
+        body = make_body(9) + b"\x00"  # 9*16+1 バイト
+        with self.assertRaises(ValueError):
+            T.run_transfer(dev, body, 64, log=lambda *a: None)
+        self.assertEqual(dev.sent, [])
 
     def test_full_coverage_8040(self):
         body = make_body(8040)
