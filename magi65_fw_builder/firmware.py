@@ -4,7 +4,7 @@ Task 3: .exe/.exe.zip からの .NET マネージドリソース抽出（extract
 """
 import struct
 import zipfile
-from .constants import REPORT_ID, HEADER_LEN, CHUNK, MAX_PKTS_PER_REPORT, MIN_REPORT_LEN
+from .constants import REPORT_ID, HEADER_LEN, CHUNK, MAX_PKTS_PER_REPORT, MIN_REPORT_LEN, MAGI65_TUPLE
 
 def crc16(data: bytes) -> int:
     crc = 0xFFFF
@@ -231,3 +231,29 @@ def parse_param(param_128k):
         "vid": int(s(64, 68), 16), "pid": int(s(68, 72), 16),
         "report_id": int(s(72, 74), 16), "usage_page": int(s(80, 84), 16),
     }
+
+
+# ---------------------------------------------------------------------------
+# Task 4: 検証ゲート
+# ---------------------------------------------------------------------------
+
+def validate_firmware(code_2m: bytes) -> None:
+    size = source_bin_size(code_2m)
+    if size < 4:
+        raise ValueError(f"本体サイズが小さすぎる/不正: {size}")
+    if len(code_2m) < HEADER_LEN + size:
+        raise ValueError(f"code_2M が短すぎる: 必要 {HEADER_LEN + size}, 実際 {len(code_2m)}")
+    bin_crc = int.from_bytes(code_2m[HEADER_LEN + size - 4:HEADER_LEN + size], "little")
+    if bin_crc in (0, 0xFFFFFFFF):
+        raise ValueError(f"本体末尾CRC が無効値: 0x{bin_crc:08X}")
+    n_chunks = (size + (-size) % CHUNK) // CHUNK
+    if n_chunks > 0x10000:
+        raise ValueError(f"チャンク数 {n_chunks} が 16-bit 空間超過")
+
+def validate_identity(param: dict) -> None:
+    got = (param["vid"], param["pid"], param["usage_page"], param["report_id"])
+    if got != MAGI65_TUPLE:
+        raise ValueError(f"識別値が Magi65 と不一致: {got} != {MAGI65_TUPLE}（別機種の updater?）")
+
+def header_filler_ok(code_2m: bytes) -> bool:
+    return code_2m[0:48] == b"\x56" * 48

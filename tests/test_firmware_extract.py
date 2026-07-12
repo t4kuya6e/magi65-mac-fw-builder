@@ -83,5 +83,39 @@ class ExtractRejectTest(unittest.TestCase):
         got = fw.extract_from_exe(self._tmp("ok.zip", buf.getvalue()))
         self.assertEqual(len(got["code_2m"]), 2097152)
 
+def _mk(size, tail_crc=b"\x01\x02\x03\x04", total=None):
+    total = total or (C.HEADER_LEN + max(size, 4) + 16)
+    b = bytearray(total)
+    b[0:48] = b"\x56" * 48
+    b[48:52] = size.to_bytes(4, "big")
+    if size >= 4:
+        b[C.HEADER_LEN + size - 4:C.HEADER_LEN + size] = tail_crc
+    return bytes(b)
+
+class ValidateTest(unittest.TestCase):
+    def test_rejects_size_lt4(self):
+        self.assertRaises(ValueError, fw.validate_firmware, _mk(2))
+
+    def test_rejects_truncated(self):
+        self.assertRaises(ValueError, fw.validate_firmware, _mk(128628, total=C.HEADER_LEN + 100))
+
+    def test_rejects_bincrc_zero(self):
+        self.assertRaises(ValueError, fw.validate_firmware, _mk(64, tail_crc=b"\x00\x00\x00\x00"))
+
+    def test_rejects_bincrc_ffff(self):
+        self.assertRaises(ValueError, fw.validate_firmware, _mk(64, tail_crc=b"\xff\xff\xff\xff"))
+
+    def test_rejects_over_16bit(self):
+        self.assertRaises(ValueError, fw.validate_firmware, _mk(0x110000))
+
+    def test_identity_mismatch(self):
+        self.assertRaises(ValueError, fw.validate_identity,
+                          {"vid": 0x1234, "pid": 0x5055, "usage_page": 0xFFEF, "report_id": 5})
+
+    def test_header_filler_ok(self):
+        self.assertTrue(fw.header_filler_ok(_mk(64)))
+        bad = bytearray(_mk(64)); bad[0] = 0x00
+        self.assertFalse(fw.header_filler_ok(bytes(bad)))
+
 if __name__ == "__main__":
     unittest.main()
