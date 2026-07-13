@@ -180,14 +180,14 @@ class OtaDevice:
         self.max_input_report = None
         self._mode = ctypes.c_void_p.in_dll(self.cf, "kCFRunLoopDefaultMode")
 
-    def open(self):
+    def open(self, report_len=64):
         r = self.iokit.IOHIDDeviceOpen(self.dev, kIOHIDOptionsTypeNone) & 0xFFFFFFFF
         if r != 0:
             raise RuntimeError(f"open(None) 失敗 0x{r:08X}"
                                 + (" (0xE00002E2=入力監視権限が必要)" if r == 0xE00002E2 else ""))
         self.max_output_report = _int_prop(self.cf, self.iokit, self.dev, "MaxOutputReportSize")
         self.max_input_report = _int_prop(self.cf, self.iokit, self.dev, "MaxInputReportSize")
-        self._in_buf = (c_uint8 * 64)()
+        self._in_buf = (c_uint8 * report_len)()
         REPORT_CB = ctypes.CFUNCTYPE(
             None, c_void_p, c_int, c_void_p, c_int,
             c_uint32, POINTER(c_uint8), c_long)
@@ -203,7 +203,7 @@ class OtaDevice:
 
         self._cb = REPORT_CB(_on_report)
         self.iokit.IOHIDDeviceRegisterInputReportCallback(
-            self.dev, self._in_buf, 64, self._cb, None)
+            self.dev, self._in_buf, report_len, self._cb, None)
         self.iokit.IOHIDDeviceScheduleWithRunLoop(
             self.dev, self.cf.CFRunLoopGetCurrent(), self._mode)
 

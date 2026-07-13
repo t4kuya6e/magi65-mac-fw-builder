@@ -119,14 +119,16 @@ def do_check(args, body):
         return 30
     dev = hid.OtaDevice(cand["dev"], timeout=args.timeout)
     try:
-        dev.open()
+        dev.open(args.report_len)
         verify_connected_identity(dev)
         print(
             f"[*] HID report length: max_output_report={dev.max_output_report} "
             f"max_input_report={dev.max_input_report} (指定 --report-len={args.report_len})"
         )
-        if dev.max_output_report != args.report_len or dev.max_input_report != args.report_len:
-            print("[WARN] HID レポート長が --report-len と不一致です。")
+        if not fw.flash_report_len_ok(args.report_len, dev.max_output_report):
+            print("[WARN] 出力側 HID レポート長（max_output_report）が --report-len と不一致です。")
+        if not fw.flash_report_len_ok(args.report_len, dev.max_input_report):
+            print("[WARN] 入力側 HID レポート長（max_input_report）が --report-len と不一致です。")
         resp = dev.send_and_wait(fw.version_query_report(args.report_len))
         if not resp or resp[0] != C.REPORT_ID:
             print("[FAIL] バージョン照会に失敗しました（応答なし、または report_id 不一致）。")
@@ -168,7 +170,7 @@ def _post_flash_verify(args, expected_crc, retry_seconds=10.0, interval=1.0):
         if len(cands) == 1:
             v = hid.OtaDevice(cands[0]["dev"], timeout=args.timeout)
             try:
-                v.open()
+                v.open(args.report_len)
                 resp = v.send_and_wait(fw.version_query_report(args.report_len))
                 if resp and resp[0] == C.REPORT_ID:
                     parsed = T.parse_version(resp[1])
@@ -223,15 +225,23 @@ def do_flash(args, body, expected_crc):
     try:
         caffeinate = subprocess.Popen(["caffeinate", "-dims", "-w", str(os.getpid())])
         try:
-            dev.open()
+            dev.open(args.report_len)
             verify_connected_identity(dev)
             print(f"[*] max_output_report={dev.max_output_report} max_input_report={dev.max_input_report}")
             if not fw.flash_report_len_ok(args.report_len, dev.max_output_report):
                 print(
-                    f"[FAIL] --report-len({args.report_len}) がデバイスの "
+                    f"[FAIL] --report-len({args.report_len}) がデバイスの出力側 "
                     f"max_output_report({dev.max_output_report}) と不一致。中止。"
                 )
                 return 43
+            if not fw.flash_report_len_ok(args.report_len, dev.max_input_report):
+                print(
+                    f"[FAIL] --report-len({args.report_len}) がデバイスの入力側 "
+                    f"max_input_report({dev.max_input_report}) と不一致。"
+                    "START送信後のACKエコーが受信バッファ切り詰めで不一致になり"
+                    "転送中断（文鎮化リスク）につながるため中止。"
+                )
+                return 44
             rc = T.run_transfer(dev, body, args.report_len, log=print)
             if rc != 0:
                 print(f"[FAIL] 転送が失敗しました（code={rc}）。")
