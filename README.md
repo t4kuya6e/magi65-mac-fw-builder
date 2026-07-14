@@ -7,7 +7,7 @@ macOS 標準の `python3` と `ctypes`（IOKit 直叩き）のみで動作し、
 ## 前提
 
 - macOS。
-- `python3`（macOS 標準搭載のもので動作します）。
+- `python3`。macOS 標準の `/usr/bin/python3`（Command Line Tools 同梱、Python 3.9 以降）で動作します。`python3` が PATH に無く `command not found` になる場合は、以下のコマンド例のように絶対パス `/usr/bin/python3` を使ってください（pyenv/Homebrew の python3 でも可）。
 - 実行するターミナルアプリ（Terminal.app など）に「システム設定 > プライバシーとセキュリティ > 入力監視（Input Monitoring）」の権限を付与していること。権限が無いと HID レポート送信が `kIOReturnNotPermitted` で失敗します。
 - キーボードを **USB 有線モード**にしていること（`FN + T` または `FN + 5`）。無線（Bluetooth/2.4GHz）接続では OTA インターフェースが出てきません。
 
@@ -22,7 +22,7 @@ macOS 標準の `python3` と `ctypes`（IOKit 直叩き）のみで動作し、
 デバイスに一切接続せず、抽出したファームウェアの検証と送信予定シーケンス（START/DATA/END レポートの内容）を表示します。
 
 ```
-python3 magi65_ota.py --exe <公式exeのパス>
+/usr/bin/python3 magi65_ota.py --exe <公式exeのパス>
 ```
 
 ### 3. 疎通確認（非フラッシュ）
@@ -30,7 +30,7 @@ python3 magi65_ota.py --exe <公式exeのパス>
 実機に接続し、バージョン照会のみを行います。書き込み（フラッシュ）は行いません。
 
 ```
-python3 magi65_ota.py --exe <公式exeのパス> --check
+/usr/bin/python3 magi65_ota.py --exe <公式exeのパス> --check
 ```
 
 現在デバイスに載っているファームウェアの Version/CRC が表示されれば、デバイス選択・通信経路が正しく機能しています。
@@ -40,7 +40,7 @@ python3 magi65_ota.py --exe <公式exeのパス> --check
 **不可逆操作です。下記「リスクと免責」を必ず読んでから実行してください。**
 
 ```
-python3 magi65_ota.py --exe <公式exeのパス> --flash --i-understand-brick-risk
+/usr/bin/python3 magi65_ota.py --exe <公式exeのパス> --flash --i-understand-brick-risk
 ```
 
 実行後、大文字で `FLASH` と入力することを求められます（誤操作防止の二重確認）。書き込み中はスリープ・ディスプレイ休止を抑止するため `caffeinate` を内蔵起動します。
@@ -79,13 +79,13 @@ python3 magi65_ota.py --exe <公式exeのパス> --flash --i-understand-brick-ri
 実機不要の純粋ロジックテストのみで実行できます。
 
 ```
-python3 -m unittest discover -s tests -v
+/usr/bin/python3 -m unittest discover -s tests -v
 ```
 
 公式 `.exe` を使った抽出テストは、環境変数 `MAGI65_TEST_EXE` に実ファイルのパスを設定したときのみ実行されます（未設定の場合は自動的に skip されます）。
 
 ```
-MAGI65_TEST_EXE=<公式exeのパス> python3 -m unittest discover -s tests -v
+MAGI65_TEST_EXE=<公式exeのパス> /usr/bin/python3 -m unittest discover -s tests -v
 ```
 
 ## ドキュメント
