@@ -122,7 +122,7 @@ class TransferTest(unittest.TestCase):
         self.assertFalse(T.ack_is_echo(s, (5, b"\x05\x02\x02\x00")))
 
     def test_wrong_rid_ack_rejected(self):
-        # rid が 5 以外の ACK は内容が一致しても不合格（レビュー指摘 3巡#Medium2）
+        # rid が 5 以外の ACK は内容が一致しても不合格（レビュー指摘 Medium2）
         s = b"\x05\x02\x02\x00\x01\xff" + b"\xff" * 58
         self.assertFalse(T.ack_is_echo(s, (0x99, s)))
 
@@ -153,7 +153,7 @@ class TransferTest(unittest.TestCase):
         rc = T.run_transfer(dev, body, 64, log=lambda *a: None)
         self.assertEqual(rc, 0)
         self.assertEqual(dev.sent.count("DATA"), 2680)
-        # addr だけでなく全 8040 パケットの data/CRC まで照合（レビュー指摘 3巡#Medium3）
+        # addr だけでなく全 8040 パケットの data/CRC まで照合（レビュー指摘 Medium3）
         self.assertEqual(len(dev.packets), 8040)
         for i, pkt in enumerate(dev.packets):
             self.assertEqual(pkt, fw.data_packet(body, i))

@@ -26,7 +26,7 @@ def parse_completion(data):
 
 def ack_is_echo(sent: bytes, resp) -> bool:
     # ACK は送信レポート全体のエコー（OTA_PROTOCOL.md §13）。
-    # rid==5（レビュー指摘 3巡#Medium2, END/version-gate と対称）、送信全長が一致（レビュー指摘 High#1）を要求。
+    # rid==5（レビュー指摘 Medium2, END/version-gate と対称）、送信全長が一致（レビュー指摘 High#1）を要求。
     if resp is None:
         return False
     rid, data = resp

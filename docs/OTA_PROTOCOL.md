@@ -5,7 +5,7 @@
 | 対象 | `MG65-CSF6C4-V0120-20260120.exe`（IQUNIX Magi65 ファーム更新ツール） |
 | 目的 | Windows 専用ツールの通信仕様を解明し、macOS ネイティブ実装の根拠とする |
 | 解析手法 | .NET アセンブリの静的解析のみ（`monodis` で IL、`ilspycmd 8.2` で C# 逆コンパイル）。**実機への書き込みは未実施** |
-| 生成物 | 逆コンパイル C#: `analysis/csharp/MG65-CSF6C4-V0120-20260120.decompiled.cs`（3163行）／ 抽出ファーム: `analysis/code_2M.bin`, `analysis/param_128K.bin` |
+| 生成物 | 逆コンパイル C#（約3163行）と抽出ファーム（`code_2M` / `param_128K`）。※逆コンパイル成果物・ファーム本体は本リポジトリには同梱しない（各自が公式 updater から取得・抽出する） |
 | 作成日 | 2026-07-11 |
 
 > **信頼度の表記**: 各項に［確定］＝逆コンパイル済みコードから直接読み取れる事実 ／［推定］＝コードのロジックからの推論で実機未検証、を付す。
@@ -281,7 +281,7 @@ wait completion [05,02,03,00,06,FF, result]; result==0 → 成功
 
 ---
 
-## 11. 未確定事項・要検証（外部レビュー観点）
+## 11. 未確定事項・要検証
 
 1. `OutputReportByteLength` / `InputReportByteLength` の実値（実機HID caps依存。レポートの総長・パディング量に影響）。
 2. ACK が「1送信=1入力レポート」で返る前提の妥当性（DATA中のACK内容は未検査）。
@@ -293,9 +293,9 @@ wait completion [05,02,03,00,06,FF, result]; result==0 → 成功
 
 ---
 
-## 12. 外部レビューによる独立検証の結果（2026-07-11 反映）
+## 12. 独立検証の結果（2026-07-11）
 
-逆コンパイル済み C# とバイナリを用いて 外部レビュー（読み取り専用サンドボックス）に独立照合させた。**Critical 指摘なし。核心は全て一致で確認済み。**
+逆コンパイル済み C# とバイナリを用いて独立に再照合した。**Critical 指摘なし。核心は全て一致で確認済み。**
 
 ### 再計算で一致を確認（テストベクタは正しい）
 - `source_bin_size = 128628 (0x1F674)`、パディング後チャンク数 `8040`
@@ -340,7 +340,7 @@ wait completion [05,02,03,00,06,FF, result]; result==0 → 成功
 
 ### ステップ②実機書き込み 成功（2026-07-12・IQUNIX MG65 実機） ［確定・実機］
 - 動機: VIA 最新版でエラーが出るため V0120 へ更新。
-- `ota_flash.py --flash` で全 8040 チャンクを送信し完走。**書き込み前 CRC=0x391E4BF2 → 書き込み後 CRC=0x01020FA4**（V0120 本体CRCと一致）を `--check` で確認し、更新成功を確定。
+- `magi65_ota.py --flash` で全 8040 チャンクを送信し完走。**書き込み前 CRC=0x391E4BF2 → 書き込み後 CRC=0x01020FA4**（V0120 本体CRCと一致）を `--check` で確認し、更新成功を確定。
 - **ACK 挙動（実機観測）**: デバイスは受信レポートをそのままエコーバックする。START ACK=送信 START（`05 02 02 00 01 FF…`）、DATA#0 ACK=送信 DATA#0（`05 02 3C 00 …`）。「1送信=1入力レポート」のペーシング前提は実機で正しく機能。
 - **END 完了応答（実機確認）**: `05 02 03 00 06 FF 00`（result=index6=0 → OTA Success）。§6 の読解と完全一致。
 - 上記により、以下「未実証」だった ACK・END 完了応答の挙動は実機で確認済み（NAK 形式は今回エラーが出なかったため依然未観測）。in-place/staged の別は、今回正常完了したため実害なく決着。
@@ -351,21 +351,21 @@ wait completion [05,02,03,00,06,FF, result]; result==0 → 成功
 - **文鎮化リスクは②で初めて発生する**（①はフラッシュ非書換）。復旧用ブートローダの有無は依然未確認。
 
 ### ステップ②書き込みツールの実装状況（2026-07-12・ドライランまで）
-- `mac_ota/ota_flash.py` を実装。§7 のシーケンス（START→DATA→END）を IOKit 直叩き（§13 の open(None) 方式）で送信。デバイス選択は hidapi 列挙で 0xFFEF の RegID を特定→IOKit で一致 open。
-- ペイロード/レポート組み立ては純粋関数化し、`mac_ota/test_ota_builder.py` が §8 の既知ベクタ（CRC・addr・START/DATA/END・パディング）に一致することを検証。さらに全 8040 パケットの addr/data/CRC を網羅照合（全 PASS）。
+- 本ツールは §7 のシーケンス（START→DATA→END）を IOKit 直叩き（§13 の open(None) 方式）で送信する。デバイス選択は IOKit の `DeviceUsagePairs` 列挙で 0xFFEF を特定して open する。
+- ペイロード/レポート組み立ては純粋関数化し、ビルダーのテスト が §8 の既知ベクタ（CRC・addr・START/DATA/END・パディング）に一致することを検証。さらに全 8040 パケットの addr/data/CRC を網羅照合（全 PASS）。
 - 逆コンパイル C# の `ota_write()` ループと突き合わせ、境界（index 8039 で停止・超過パケット破棄）と END（last=0x1F67/inv=0xE099）が byte 単位で一致することを確認。
-- 転送ループを `run_transfer()` に分離し、擬似デバイスで制御フロー（START 1回→DATA 2680レポート=全8040チャンクを昇順で過不足なく→END→完了判定、ACK 不正時の即中止）を `mac_ota/test_transfer.py` で検証（実機不要・全 PASS）。
+- 転送ループを `run_transfer()` に分離し、擬似デバイスで制御フロー（START 1回→DATA 2680レポート=全8040チャンクを昇順で過不足なく→END→完了判定、ACK 不正時の即中止）を 転送のテスト で検証（実機不要・全 PASS）。
 - `--flash` は `caffeinate` を内蔵起動し転送中のスリープ/ディスプレイ休止を抑止する。
 - **安全ゲート**: 既定はドライラン（デバイス非接触）。`--check` は非フラッシュ疎通確認。`--flash` は `--i-understand-brick-risk` フラグ＋対話で大文字 `FLASH` 入力の二重確認が必須。
 - **実書き込みは未実行**（ユーザーの明示 Go 待ち）。高強度コードレビューを実施し、CONFIRMED 正確性バグ（破損/切り詰めファームのサイレント受理、report_len<64 のサイレント肥大化、size=0 での START 後クラッシュ）を修正済み。回帰テスト追加済み。
-- **ACK 検証の既知の限界**: DATA 転送中の ACK/NAK 内容フォーマットは未解析（実機観測でのみ判明）。現状は report_id=5 受信までしか検証できないため、`ota_flash.py --flash` は最初の START/DATA ACK と END 応答の生バイトをダンプする。実書き込み時にこれを観測し NAK 形式が判明したら `_valid_ack()` を厳格化すること。
+- **ACK 検証の既知の限界**: DATA 転送中の ACK/NAK 内容フォーマットは未解析（実機観測でのみ判明）。現状は report_id=5 受信までしか検証できないため、`magi65_ota.py --flash` は最初の START/DATA ACK と END 応答の生バイトをダンプする。実書き込み時にこれを観測し NAK 形式が判明したら `_valid_ack()` を厳格化すること。
 
 ### 実 HID レポート長（§11-1 の未確定点の確定・2026-07-12 実機実測）
 - OTA デバイス（RegID 4295829249）の IOKit プロパティ: **MaxOutputReportSize=64 / MaxInputReportSize=64 / MaxFeatureReportSize=64**（open 不要のプロパティ読みで取得）。
-- 既定 report_len=64 が実機と一致。`ota_flash.py` は `--flash` 時に report_len と MaxOutputReportSize の一致を検証し、不一致なら書き込みを中止する。
+- 既定 report_len=64 が実機と一致。`magi65_ota.py` は `--flash` 時に report_len と MaxOutputReportSize の一致を検証し、不一致なら書き込みを中止する。
 
-### 外部レビュー第2回の結果（2026-07-12・実装＋解析の再検証）
-逆コンパイル C# と code_2M.bin を用いて 外部レビュー（読み取り専用で実行）に再照合させた。**§3〜§8・crc16・8040パケット境界（index0=0xCC80/index1=0x11B1/index8039=0xC487）・END 値・独立再計算値はすべて「一致」で確認。Critical ゼロ。** ビルダー純粋関数も一致判定。
+### 独立検証（第2回）の結果（2026-07-12・実装＋解析の再検証）
+逆コンパイル C# と code_2M.bin を用いて独立に再照合した。**§3〜§8・crc16・8040パケット境界（index0=0xCC80/index1=0x11B1/index8039=0xC487）・END 値・独立再計算値はすべて「一致」で確認。Critical ゼロ。** ビルダー純粋関数も一致判定。
 
 指摘（いずれも「START 送信後に転送が中断して未完了化する」経路の防御。実装済み）:
 - High: 16-bit index を超える巨大イメージを START 前に拒否（`extract_firmware` でチャンク数>65536 を例外化）。
