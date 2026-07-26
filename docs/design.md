@@ -28,7 +28,7 @@ macOS 標準の `python3` だけで動く、ソース公開の CLI ツールを�
 | `firmware.py` | `.exe`/`.exe.zip` からのファーム抽出、ビルダー純粋関数、検証ゲート |
 | `magi65_ota.py` | CLI 本体。抽出→検証→check/dry-run/flash と安全ゲート |
 | `tests/` | 実機不要の純粋ロジックテスト |
-| `README.md` | 前提・手順・リスクと復旧の注意 |
+| `README.md` / `README_ja.md` | 前提・手順・リスクと復旧の注意（英語版 / 日本語版。内容は同一） |
 | `LICENSE` | MIT |
 
 ### 2.1 依存関係
