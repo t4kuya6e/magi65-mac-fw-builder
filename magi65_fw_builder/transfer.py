@@ -2,7 +2,8 @@
 Task 5: START/DATA/END の送受信と ACK 検証、バージョン照会ゲート。
 """
 from .constants import REPORT_ID, CHUNK
-from .firmware import start_report, data_report, end_report, version_query_report
+from .firmware import (start_report, data_report, end_report, version_query_report,
+                       data_payload_ranges)
 
 def parse_version(data):
     # 完全な固定ヘッダを要求（レビュー指摘 High#5）。report_id 込み: 05 01 08 00 <ver4> <crc4>
@@ -24,13 +25,39 @@ def parse_completion(data):
         return data[5]
     return None
 
-def ack_is_echo(sent: bytes, resp) -> bool:
+def ack_is_echo(sent: bytes, resp, maskable_ranges=()) -> bool:
     # ACK は送信レポート全体のエコー（OTA_PROTOCOL.md §13）。
     # rid==5（レビュー指摘 Medium2, END/version-gate と対称）、送信全長が一致（レビュー指摘 High#1）を要求。
+    # maskable_ranges（DATA のデータ部）に限り、デバイスが 0xFF を返すことを許容する。
+    # OTA 完走までブートマジックを未書き込み（0xFF）のまま保持する挙動への対応
+    # （2026-07-26 実機 V0120 観測。OTA_PROTOCOL.md「V0120 での ACK 挙動の変化」を参照）。
+    # フレームヘッダ・パケット index・パケット CRC は厳密照合を維持し、
+    # 古い応答・重複レポート・順序ずれは従来どおり検出する。
     if resp is None:
         return False
     rid, data = resp
-    return rid == REPORT_ID and len(data) >= len(sent) and bytes(data[:len(sent)]) == bytes(sent)
+    if rid != REPORT_ID or len(data) < len(sent):
+        return False
+    for i in range(len(sent)):
+        if data[i] == sent[i]:
+            continue
+        if data[i] == 0xFF and any(s <= i < e for s, e in maskable_ranges):
+            continue
+        return False
+    return True
+
+def masked_offsets(sent: bytes, resp, maskable_ranges=()) -> list:
+    """ACK のうち maskable_ranges 内で 0xFF に置換されて返った offset を返す。
+
+    ack_is_echo が許容した差分を可視化するためのもの。緩和が想定どおり
+    ブートマジックだけに効いているかを操作者が確認できるようにする。
+    """
+    if resp is None:
+        return []
+    _rid, data = resp
+    return [i for i in range(min(len(sent), len(data)))
+            if data[i] != sent[i] and data[i] == 0xFF
+            and any(s <= i < e for s, e in maskable_ranges)]
 
 def run_transfer(dev, body, report_len, log=print):
     if len(body) % CHUNK != 0:
@@ -51,14 +78,27 @@ def run_transfer(dev, body, report_len, log=print):
         log("[FAIL] START の ACK がエコー不一致。中止。")
         return 10
     idx = 0
+    n_masked = 0
     while idx < n_chunks:
         rep, count = data_report(body, idx, report_len)
-        if not ack_is_echo(rep, dev.send_and_wait(rep)):
+        ranges = data_payload_ranges(count)
+        resp = dev.send_and_wait(rep)
+        if not ack_is_echo(rep, resp, ranges):
             log(f"[FAIL] DATA idx={idx} の ACK がエコー不一致。中止。")
             return 11
+        masked = masked_offsets(rep, resp, ranges)
+        if masked:
+            if n_masked == 0:
+                spots = ", ".join(
+                    f"offset={o}(body[{(idx + (o - 6) // 20) * CHUNK + (o - 6) % 20}])"
+                    for o in masked)
+                log(f"[*] ACK マスク検出（デバイスが 0xFF を返した）: DATA idx={idx} {spots}")
+            n_masked += len(masked)
         idx += count
         if idx % 300 == 0 or idx >= n_chunks:
             log(f"    {idx}/{n_chunks} チャンク送信")
+    if n_masked:
+        log(f"[*] ACK マスクは合計 {n_masked} バイト。想定はブートマジック 1 バイトのみ。")
     log("[*] END 送信")
     resp = dev.send_and_wait(end_report(n_chunks, report_len))
     if not resp:

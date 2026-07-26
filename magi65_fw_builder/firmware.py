@@ -28,6 +28,14 @@ def data_packet(body: bytes, index: int) -> bytes:
     head = index.to_bytes(2, "little") + body[index * CHUNK:index * CHUNK + CHUNK]
     return head + crc16(head).to_bytes(2, "little")
 
+def data_payload_ranges(count: int) -> list:
+    """DATA レポート内の 16 バイトデータ部を [(start, end), ...] で返す。
+
+    パケット k は report offset 4+20k から 20 バイト（index2 + data16 + CRC2）。
+    データ部はそのうち offset 6+20k から CHUNK バイト。
+    """
+    return [(6 + 20 * k, 6 + 20 * k + CHUNK) for k in range(count)]
+
 def _frame(payload: bytes, report_len: int) -> bytes:
     if report_len < MIN_REPORT_LEN:
         raise ValueError(f"report_len は {MIN_REPORT_LEN} 以上である必要があります: {report_len}")
