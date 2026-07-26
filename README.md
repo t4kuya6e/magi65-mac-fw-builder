@@ -30,16 +30,28 @@ cd magi65-mac-fw-builder
 
 さらに、キーボードを **USB 有線モード**にして Mac に直接接続します（`FN + T` または `FN + 5`。無線接続では OTA インターフェースが現れません）。
 
-### 1. 公式ファームウェア更新ファイルを入手する
+### 1. 公式ファームウェア更新ファイルを入手して `exe_here/` に置く
 
-本ツールにファームウェア本体は同梱していません。IQUNIX 公式サイトから、お使いの機種（Magi65 ANSI/CSF6C4）向けの更新ツール `.exe`（または `.exe` を含む `.zip`）をダウンロードしてください。以降のコマンドの `<公式exeのパス>` はこのファイルのパスに置き換えます。
+本ツールにファームウェア本体は同梱していません。IQUNIX 公式サイトから、お使いの機種（Magi65 ANSI/CSF6C4）向けの更新ツール `.exe` をダウンロードし、リポジトリ直下の `exe_here/` に置いてください。`.zip` でダウンロードした場合は展開して、中の `.exe` を置きます。
+
+```
+magi65-mac-fw-builder/
+├── exe_here/
+│   └── Magi65_xxxx.exe   ← 公式 .exe を 1 個だけ置く
+├── magi65_ota.py
+└── ...
+```
+
+**`exe_here/` に置く `.exe` は必ず 1 個だけにしてください。** 以降のコマンド例はこのファイルを `exe_here/*.exe` で参照するため、ファイル名に書き換えずそのままコピー&ペーストで実行できます。`.exe` が 2 個以上あるとコマンドは usage エラーで止まり、1 個も無い場合は `no matches found` になります。どちらもデバイスには一切触れずに終了します。
+
+`exe_here/` の中身は `.gitignore` で除外されるため、誤ってコミットされることはありません。
 
 ### 2. ドライランで送信予定を確認する
 
 デバイスに一切接続せず（`--check`/`--flash` を付けない既定動作）、抽出したファームウェアの検証と送信予定シーケンス（START/DATA/END レポートの内容）を表示します。まずここで抽出・検証が通ることを確認してください。
 
 ```
-/usr/bin/python3 magi65_ota.py --exe <公式exeのパス>
+/usr/bin/python3 magi65_ota.py --exe exe_here/*.exe
 ```
 
 ### 3. 疎通確認（非フラッシュ）
@@ -47,7 +59,7 @@ cd magi65-mac-fw-builder
 実機に接続し、バージョン照会のみを行います。書き込み（フラッシュ）は行いません。
 
 ```
-/usr/bin/python3 magi65_ota.py --exe <公式exeのパス> --check
+/usr/bin/python3 magi65_ota.py --exe exe_here/*.exe --check
 ```
 
 現在デバイスに載っているファームウェアの Version/CRC が表示されれば、デバイス選択・通信経路・権限が正しく機能しています（`kIOReturnNotPermitted` で失敗する場合は入力監視権限を再確認）。書き込み後（手順 5）にこの CRC が変わることで成否を判断できるので、ここでの値を控えておくとよいです。
@@ -57,7 +69,7 @@ cd magi65-mac-fw-builder
 **不可逆操作です。下記「リスクと免責」を必ず読んでから実行してください。**
 
 ```
-/usr/bin/python3 magi65_ota.py --exe <公式exeのパス> --flash --i-understand-brick-risk
+/usr/bin/python3 magi65_ota.py --exe exe_here/*.exe --flash --i-understand-brick-risk
 ```
 
 - 実行後、大文字で `FLASH` と入力することを求められます（誤操作防止の二重確認）。
@@ -70,7 +82,7 @@ cd magi65-mac-fw-builder
 手順 4 の完了後、CRC が入手した公式ファームのものに変わっていることを確認します（`--flash` 内でも自動照合されますが、手動でも確認できます）。
 
 ```
-/usr/bin/python3 magi65_ota.py --exe <公式exeのパス> --check
+/usr/bin/python3 magi65_ota.py --exe exe_here/*.exe --check
 ```
 
 表示された CRC が公式ファーム本体末尾の CRC と一致していれば、書き込みは成功しています。
@@ -79,7 +91,7 @@ cd magi65-mac-fw-builder
 
 | オプション | 説明 |
 |---|---|
-| `--exe <path>` | （必須）ファームウェア入り `.exe`/`.exe.zip` のパス |
+| `--exe <path>` | （必須）ファームウェア入り `.exe`/`.exe.zip` のパス。`exe_here/` に `.exe` を 1 個だけ置いた場合は `exe_here/*.exe` と書ける |
 | `--check` | 実機に接続してバージョン照会のみ行う（非フラッシュ） |
 | `--flash` | 実機にファームウェアを書き込む（フラッシュ） |
 | `--i-understand-brick-risk` | `--flash` 実行の前提となる同意フラグ |
@@ -115,7 +127,7 @@ cd magi65-mac-fw-builder
 公式 `.exe` を使った抽出テストは、環境変数 `MAGI65_TEST_EXE` に実ファイルのパスを設定したときのみ実行されます（未設定の場合は自動的に skip されます）。
 
 ```
-MAGI65_TEST_EXE=<公式exeのパス> /usr/bin/python3 -m unittest discover -s tests -v
+MAGI65_TEST_EXE=$(echo exe_here/*.exe) /usr/bin/python3 -m unittest discover -s tests -v
 ```
 
 ## ドキュメント
