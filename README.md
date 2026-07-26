@@ -1,128 +1,144 @@
 # magi65-mac-fw-builder
 
-IQUNIX Magi65（ANSI/CSF6C4）向けの macOS ネイティブ OTA ファームウェア書き込みツール。
+*[日本語版はこちら / Japanese version](README_ja.md)*
 
-macOS 標準の `python3` と `ctypes`（IOKit 直叩き）のみで動作し、追加パッケージのインストール（pip/venv）を必要としません（ゼロ依存）。
+A native macOS OTA firmware flashing tool for the IQUNIX Magi65 (ANSI/CSF6C4).
 
-## 前提
+It runs on nothing but the `python3` that ships with macOS and `ctypes` (talking to IOKit directly). No additional packages to install, no pip, no venv.
 
-- macOS。
-- `python3`。macOS 標準の `/usr/bin/python3`（Command Line Tools 同梱、Python 3.9 以降）で動作します。`python3` が PATH に無く `command not found` になる場合は、以下のコマンド例のように絶対パス `/usr/bin/python3` を使ってください（pyenv/Homebrew の python3 でも可）。
-- 実行するターミナルアプリ（Terminal.app など）に「システム設定 > プライバシーとセキュリティ > 入力監視（Input Monitoring）」の権限を付与していること。権限が無いと HID レポート送信が `kIOReturnNotPermitted` で失敗します。
-- キーボードを **USB 有線モード**にしていること（`FN + T` または `FN + 5`）。無線（Bluetooth/2.4GHz）接続では OTA インターフェースが出てきません。
+## Requirements
 
-## 実行手順
+- macOS.
+- `python3`. The tool works with the system `/usr/bin/python3` (bundled with the Command Line Tools, Python 3.9 or later). If `python3` is not on your `PATH` and you get `command not found`, use the absolute path `/usr/bin/python3` as shown in the examples below (a pyenv or Homebrew `python3` works too).
+- The terminal application you run the tool from (Terminal.app or similar) must be granted **System Settings > Privacy & Security > Input Monitoring**. Without it, sending HID reports fails with `kIOReturnNotPermitted`.
+- The keyboard must be in **USB wired mode** (`FN + T` or `FN + 5`). The OTA interface is not exposed over wireless connections (Bluetooth or 2.4GHz).
 
-以下は上から順に実行する想定の手順です。コマンド例の `python3` が `command not found` になる場合は `/usr/bin/python3` を使ってください（前提参照）。
+## Procedure
 
-### 0. 取得とセットアップ
+Run the following steps in order. If `python3` in the examples gives you `command not found`, use `/usr/bin/python3` (see Requirements).
+
+### 0. Clone and set up
 
 ```
 git clone https://github.com/t4kuya6e/magi65-mac-fw-builder.git
 cd magi65-mac-fw-builder
 ```
 
-続いて、実際にコマンドを実行するターミナルアプリ（Terminal.app 等）へ **入力監視（Input Monitoring）権限を付与**します。
+Next, **grant Input Monitoring** to the terminal application you will actually run the commands from (Terminal.app or similar).
 
-1. 「システム設定 > プライバシーとセキュリティ > 入力監視」を開く。
-2. リストに使用するターミナルアプリを追加してトグルを ON にする。
-3. 権限を反映するため、そのターミナルアプリを一度終了して起動し直す。
+1. Open System Settings > Privacy & Security > Input Monitoring.
+2. Add your terminal application to the list and turn the toggle on.
+3. Quit and relaunch that terminal application so the permission takes effect.
 
-さらに、キーボードを **USB 有線モード**にして Mac に直接接続します（`FN + T` または `FN + 5`。無線接続では OTA インターフェースが現れません）。
+Then put the keyboard into **USB wired mode** and connect it directly to your Mac (`FN + T` or `FN + 5`; the OTA interface does not appear over a wireless connection).
 
-### 1. 公式ファームウェア更新ファイルを入手する
+### 1. Obtain the official firmware updater and put it in `exe_here/`
 
-本ツールにファームウェア本体は同梱していません。IQUNIX 公式サイトから、お使いの機種（Magi65 ANSI/CSF6C4）向けの更新ツール `.exe`（または `.exe` を含む `.zip`）をダウンロードしてください。以降のコマンドの `<公式exeのパス>` はこのファイルのパスに置き換えます。
-
-### 2. ドライランで送信予定を確認する
-
-デバイスに一切接続せず（`--check`/`--flash` を付けない既定動作）、抽出したファームウェアの検証と送信予定シーケンス（START/DATA/END レポートの内容）を表示します。まずここで抽出・検証が通ることを確認してください。
+The firmware itself is not bundled with this tool. Download the official updater `.exe` for your model (Magi65 ANSI/CSF6C4) from the IQUNIX website and place it in `exe_here/` at the repository root. If you downloaded a `.zip`, extract it and place the `.exe` from inside.
 
 ```
-/usr/bin/python3 magi65_ota.py --exe <公式exeのパス>
+magi65-mac-fw-builder/
+├── exe_here/
+│   └── Magi65_xxxx.exe   ← put exactly one official .exe here
+├── magi65_ota.py
+└── ...
 ```
 
-### 3. 疎通確認（非フラッシュ）
+**Place exactly one `.exe` in `exe_here/`.** Every command below refers to it as `exe_here/*.exe`, so you can copy and paste them as-is without substituting a filename. With two or more `.exe` files the command stops with a usage error; with none you get `no matches found`. Both cases exit without touching the device at all.
 
-実機に接続し、バージョン照会のみを行います。書き込み（フラッシュ）は行いません。
+The contents of `exe_here/` are excluded by `.gitignore`, so there is no risk of committing the file by accident.
 
-```
-/usr/bin/python3 magi65_ota.py --exe <公式exeのパス> --check
-```
+### 2. Dry run to inspect what would be sent
 
-現在デバイスに載っているファームウェアの Version/CRC が表示されれば、デバイス選択・通信経路・権限が正しく機能しています（`kIOReturnNotPermitted` で失敗する場合は入力監視権限を再確認）。書き込み後（手順 5）にこの CRC が変わることで成否を判断できるので、ここでの値を控えておくとよいです。
-
-### 4. 書き込み（フラッシュ）
-
-**不可逆操作です。下記「リスクと免責」を必ず読んでから実行してください。**
+With neither `--check` nor `--flash` (the default), the tool never connects to the device. It validates the extracted firmware and prints the sequence it would send (the contents of the START, DATA, and END reports). Confirm that extraction and validation succeed here first.
 
 ```
-/usr/bin/python3 magi65_ota.py --exe <公式exeのパス> --flash --i-understand-brick-risk
+/usr/bin/python3 magi65_ota.py --exe exe_here/*.exe
 ```
 
-- 実行後、大文字で `FLASH` と入力することを求められます（誤操作防止の二重確認）。
-- 書き込み中はスリープ・ディスプレイ休止を抑止するため `caffeinate` を内蔵起動します。
-- **書き込み中はキーボードやケーブルに触れない**でください。中断はファームウェア破損の恐れがあります。
-- 成功すると `OTA Success` と表示され、続いて自動でファームウェア CRC を照合します。
+### 3. Connectivity check (no flashing)
 
-### 5. 書き込み後の確認
-
-手順 4 の完了後、CRC が入手した公式ファームのものに変わっていることを確認します（`--flash` 内でも自動照合されますが、手動でも確認できます）。
+Connects to the device and queries the version only. Nothing is written.
 
 ```
-/usr/bin/python3 magi65_ota.py --exe <公式exeのパス> --check
+/usr/bin/python3 magi65_ota.py --exe exe_here/*.exe --check
 ```
 
-表示された CRC が公式ファーム本体末尾の CRC と一致していれば、書き込みは成功しています。
+If the version and CRC of the firmware currently on the device are printed, then device selection, the communication path, and permissions are all working (if it fails with `kIOReturnNotPermitted`, re-check Input Monitoring). Make a note of the CRC: a change in this value after flashing (step 5) is how you confirm the result.
 
-## コマンド一覧
+### 4. Flash
 
-| オプション | 説明 |
+**This is irreversible. Read "Risks and disclaimer" below before running it.**
+
+```
+/usr/bin/python3 magi65_ota.py --exe exe_here/*.exe --flash --i-understand-brick-risk
+```
+
+- You will be prompted to type `FLASH` in uppercase (a second confirmation to prevent accidental runs).
+- The tool launches `caffeinate` internally to prevent sleep and display sleep during the write.
+- **Do not touch the keyboard or the cable while it is writing.** An interruption risks corrupting the firmware.
+- On success it prints `OTA Success` and then automatically verifies the firmware CRC.
+
+### 5. Verify after flashing
+
+Once step 4 finishes, confirm that the CRC has changed to that of the official firmware you obtained. The `--flash` run verifies this automatically, but you can also check it by hand.
+
+```
+/usr/bin/python3 magi65_ota.py --exe exe_here/*.exe --check
+```
+
+If the reported CRC matches the CRC at the end of the official firmware body, the write succeeded.
+
+## Options
+
+| Option | Description |
 |---|---|
-| `--exe <path>` | （必須）ファームウェア入り `.exe`/`.exe.zip` のパス |
-| `--check` | 実機に接続してバージョン照会のみ行う（非フラッシュ） |
-| `--flash` | 実機にファームウェアを書き込む（フラッシュ） |
-| `--i-understand-brick-risk` | `--flash` 実行の前提となる同意フラグ |
-| `--report-len <int>` | HID レポート長（既定 64） |
-| `--timeout <float>` | デバイス応答待ちのタイムアウト秒数（既定 2.0） |
+| `--exe <path>` | (required) Path to the `.exe` or `.exe.zip` containing the firmware. If exactly one `.exe` sits in `exe_here/`, you can write `exe_here/*.exe` |
+| `--check` | Connect to the device and query the version only (no flashing) |
+| `--flash` | Write the firmware to the device |
+| `--i-understand-brick-risk` | Consent flag required by `--flash` |
+| `--report-len <int>` | HID report length (default 64) |
+| `--timeout <float>` | Timeout in seconds when waiting for a device response (default 2.0) |
 
-## リスクと免責
+## Risks and disclaimer
 
-- OTA によるファームウェア書き込みは**不可逆**です。書き込み中の中断・失敗により、キーボードが**文鎮化（起動不能）**する恐れがあります。
-- ユーザー操作による簡単な復旧手段（DFU 等）は確認されていません。ハードウェアレベルでの救済（Telink BDT・基板端子経由の再書き込みなど）は可能性がありますが未確認であり、分解と専用機材を要します。
-- 本ツールが送出するデータは、公式更新ツールのプロトコル解析（逆コンパイル）と実機 1 台での書き込み成功に基づいています。**全機体・全状況における安全性は保証しません。使用は自己責任で行ってください。**
-- 本ツールは Magi65 固定識別値（VID=`0x320F` / PID=`0x5055` / UsagePage=`0xFFEF` / ReportID=`5`）と一致しない updater ファイル・デバイスを拒否します。ただし、これは**同一 VID/PID を持つ機種変種の違いまでは判別できません**。必ず自分の機種向けの公式ファイルを使用してください。
+- Flashing firmware over OTA is **irreversible**. An interruption or failure during the write may **brick** the keyboard, leaving it unable to boot.
+- No simple user-level recovery path (DFU or similar) has been confirmed. Hardware-level recovery (Telink BDT, reflashing through the PCB pads) may be possible but is unverified, and would require disassembly and dedicated equipment.
+- The data this tool sends is based on protocol analysis of the official updater (decompilation) and on successful flashing of a single physical unit. **Safety on all units and in all situations is not guaranteed. Use at your own risk.**
+- The tool rejects any updater file or device that does not match the fixed Magi65 identifiers (VID=`0x320F` / PID=`0x5055` / UsagePage=`0xFFEF` / ReportID=`5`). Note, however, that this **cannot distinguish between model variants that share the same VID/PID**. Always use the official file for your own model.
 
-### 本体整合性検証の限界
+### Limits of firmware integrity validation
 
-元の公式ツール（IQUNIX 製）自体が、ファームウェア本体末尾の CRC を再計算せず、値が `0x00000000` または `0xFFFFFFFF` でないことのみを確認しています。本ツールも同水準の検証にとどまり、以下で補完しますが、**これは完全な破損検出ではありません**。
+The original official tool (by IQUNIX) does not itself recompute the CRC at the end of the firmware body; it only checks that the value is neither `0x00000000` nor `0xFFFFFFFF`. This tool stops at the same level of validation, supplemented by the checks below, but **this is not complete corruption detection**.
 
-- リソース抽出時に `code_2M`/`param_128K` が名前・型・サイズ込みで一意に確定すること
-- 宣言サイズと実データ長の整合、チャンク数が 16-bit index の範囲内であること
-- 本体末尾 CRC が `0x00000000`/`0xFFFFFFFF` でないこと
-- 抽出した識別値（VID/PID/UsagePage/ReportID）が Magi65 固定値と一致すること
+- `code_2M` and `param_128K` must resolve uniquely during resource extraction, matching on name, type, and size
+- The declared size must agree with the actual data length, and the chunk count must fit in a 16-bit index
+- The CRC at the end of the body must not be `0x00000000` or `0xFFFFFFFF`
+- The extracted identifiers (VID/PID/UsagePage/ReportID) must match the fixed Magi65 values
 
-有効な値を持つ破損イメージ（上記チェックをすべて通過するが内容が壊れているもの）は検出できません。
+A corrupted image that carries valid-looking values (one that passes every check above while its contents are broken) will not be detected.
 
-## テスト
+## Tests
 
-実機不要の純粋ロジックテストのみで実行できます。
+The pure-logic tests run without any hardware.
 
 ```
 /usr/bin/python3 -m unittest discover -s tests -v
 ```
 
-公式 `.exe` を使った抽出テストは、環境変数 `MAGI65_TEST_EXE` に実ファイルのパスを設定したときのみ実行されます（未設定の場合は自動的に skip されます）。
+The extraction tests that use a real official `.exe` run only when the environment variable `MAGI65_TEST_EXE` points at an actual file; otherwise they are skipped automatically.
 
 ```
-MAGI65_TEST_EXE=<公式exeのパス> /usr/bin/python3 -m unittest discover -s tests -v
+MAGI65_TEST_EXE=$(echo exe_here/*.exe) /usr/bin/python3 -m unittest discover -s tests -v
 ```
 
-## ドキュメント
+## Documentation
 
-- [`docs/OTA_PROTOCOL.md`](docs/OTA_PROTOCOL.md): USB HID OTA プロトコルの解析結果（逆コンパイル・実機検証ベース）
-- [`docs/design.md`](docs/design.md): 本ツールの設計ドキュメント
+Both documents are written in Japanese.
 
-## ライセンス
+- [`docs/OTA_PROTOCOL.md`](docs/OTA_PROTOCOL.md): analysis of the USB HID OTA protocol, based on decompilation and verification against real hardware
+- [`docs/design.md`](docs/design.md): design document for this tool
 
-MIT。詳細は [`LICENSE`](LICENSE) を参照してください。
+## License
+
+MIT. See [`LICENSE`](LICENSE) for details.

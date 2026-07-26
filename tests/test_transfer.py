@@ -19,9 +19,14 @@ def classify(r):
 
 class FakeDevice:
     def __init__(self, bad_version=False, fail_at=None,
-                 wrong_version_rid=False, wrong_end_rid=False):
+                 wrong_version_rid=False, wrong_end_rid=False,
+                 mask_boot_magic=False):
         self.bad_version = bad_version; self.fail_at = fail_at
         self.wrong_version_rid = wrong_version_rid; self.wrong_end_rid = wrong_end_rid
+        # V0120 実機挙動: チャンク2（body[32:48]）先頭の Telink ブートマジックを
+        # 0xFF にマスクしてエコーする
+        # （docs/OTA_PROTOCOL.md「V0120 での ACK 挙動の変化」）。
+        self.mask_boot_magic = mask_boot_magic
         self.sent = []; self.addrs = []; self.packets = []; self._n = 0
     def send_and_wait(self, report):
         self._n += 1
@@ -44,6 +49,13 @@ class FakeDevice:
         if k == "END":
             rid = 0x99 if self.wrong_end_rid else 5
             return (rid, bytes.fromhex("0502030006ff00") + b"\x00" * 57)
+        if k == "DATA" and self.mask_boot_magic:
+            echo = bytearray(report)
+            for j in range(report[2] // 20):
+                base = 4 + j * 20
+                if (echo[base] | (echo[base + 1] << 8)) == 2:
+                    echo[base + 2] = 0xFF     # チャンク2 データ部の先頭バイト
+            return (5, bytes(echo))
         return (5, bytes(report))       # 正常 ACK = 送信レポート全体のエコー
 
 class ParseVersionTest(unittest.TestCase):
@@ -147,6 +159,14 @@ class TransferTest(unittest.TestCase):
             T.run_transfer(dev, body, 64, log=lambda *a: None)
         self.assertEqual(dev.sent, [])
 
+    def test_transfer_completes_when_device_masks_boot_magic(self):
+        # V0120 はデータ部のブートマジックを 0xFF にマスクしてエコーする。
+        # これは正常な格納報告であり、転送を中止してはならない。
+        dev = FakeDevice(mask_boot_magic=True)
+        rc = T.run_transfer(dev, make_body(9), 64, log=lambda *a: None)
+        self.assertEqual(rc, 0)
+        self.assertEqual(dev.addrs, list(range(9)))
+
     def test_full_coverage_8040(self):
         body = make_body(8040)
         dev = FakeDevice()
@@ -157,6 +177,111 @@ class TransferTest(unittest.TestCase):
         self.assertEqual(len(dev.packets), 8040)
         for i, pkt in enumerate(dev.packets):
             self.assertEqual(pkt, fw.data_packet(body, i))
+
+class MaskedOffsetsTest(unittest.TestCase):
+    def setUp(self):
+        self.rep, count = fw.data_report(make_body(3), 0, 64)
+        self.ranges = fw.data_payload_ranges(count)
+
+    def test_reports_offset_masked_to_ff(self):
+        e = bytearray(self.rep); e[46] = 0xFF
+        self.assertEqual(T.masked_offsets(self.rep, (5, bytes(e)), self.ranges), [46])
+
+    def test_exact_echo_has_no_masked_offset(self):
+        self.assertEqual(T.masked_offsets(self.rep, (5, self.rep), self.ranges), [])
+
+    def test_change_outside_ranges_is_not_counted_as_mask(self):
+        e = bytearray(self.rep); e[44] = 0xFF      # パケット index。データ部の外
+        self.assertEqual(T.masked_offsets(self.rep, (5, bytes(e)), self.ranges), [])
+
+    def test_non_ff_change_is_not_counted_as_mask(self):
+        e = bytearray(self.rep); e[46] = 0x00
+        self.assertEqual(T.masked_offsets(self.rep, (5, bytes(e)), self.ranges), [])
+
+
+class MaskLoggingTest(unittest.TestCase):
+    def _run(self, **kwargs):
+        dev = FakeDevice(**kwargs)
+        lines = []
+        rc = T.run_transfer(dev, make_body(9), 64, log=lines.append)
+        return rc, [l for l in lines if "マスク" in l]
+
+    def test_masking_logs_first_occurrence_and_total(self):
+        rc, mask_lines = self._run(mask_boot_magic=True)
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(mask_lines), 2)      # 初回検出 1 行 + 合計 1 行のみ
+        self.assertIn("body[32]", mask_lines[0])  # チャンク2 先頭 = ブートマジック
+        self.assertIn("offset=46", mask_lines[0])
+        self.assertIn("合計 1", mask_lines[1])
+
+    def test_no_masking_logs_nothing(self):
+        rc, mask_lines = self._run()
+        self.assertEqual(rc, 0)
+        self.assertEqual(mask_lines, [])
+
+
+class DataPayloadRangesTest(unittest.TestCase):
+    def test_three_packet_report(self):
+        # パケット k: base=4+20k, index=base..+1, data=base+2..+17, CRC=base+18..+19
+        self.assertEqual(fw.data_payload_ranges(3), [(6, 22), (26, 42), (46, 62)])
+
+    def test_single_packet_report(self):
+        self.assertEqual(fw.data_payload_ranges(1), [(6, 22)])
+
+    def test_observed_masked_offset_is_inside_a_payload_range(self):
+        # V0120 実機が 0xFF を返した offset 46 は パケット2 データ部の先頭にあたる
+        self.assertTrue(any(s <= 46 < e for s, e in fw.data_payload_ranges(3)))
+
+
+class AckMaskToleranceTest(unittest.TestCase):
+    """DATA の ACK は、データ部に限り 0xFF へのマスクを許容する。
+
+    デバイスは OTA 完走までブートマジックを未書き込み（0xFF）のまま保持し、
+    格納内容をそのままエコーする。フレームヘッダ・パケット index・パケット CRC
+    は引き続きバイト単位で厳密照合し、応答のずれや重複レポートを検出する。
+    """
+
+    def setUp(self):
+        self.rep, count = fw.data_report(make_body(3), 0, 64)
+        self.ranges = fw.data_payload_ranges(count)
+
+    def _echo_with(self, offset, value):
+        self.assertNotEqual(self.rep[offset], value)   # 差分が生じることを担保
+        e = bytearray(self.rep)
+        e[offset] = value
+        return (5, bytes(e))
+
+    def test_ff_in_payload_accepted(self):
+        self.assertTrue(T.ack_is_echo(self.rep, self._echo_with(46, 0xFF), self.ranges))
+
+    def test_non_ff_change_in_payload_rejected(self):
+        self.assertFalse(T.ack_is_echo(self.rep, self._echo_with(46, 0x00), self.ranges))
+
+    def test_ff_in_packet_index_rejected(self):
+        self.assertFalse(T.ack_is_echo(self.rep, self._echo_with(44, 0xFF), self.ranges))
+
+    def test_ff_in_packet_crc_rejected(self):
+        self.assertFalse(T.ack_is_echo(self.rep, self._echo_with(62, 0xFF), self.ranges))
+
+    def test_ff_in_frame_header_rejected(self):
+        self.assertFalse(T.ack_is_echo(self.rep, self._echo_with(2, 0xFF), self.ranges))
+
+    def test_exact_echo_accepted(self):
+        self.assertTrue(T.ack_is_echo(self.rep, (5, self.rep), self.ranges))
+
+    def test_truncated_ack_rejected_even_with_ranges(self):
+        self.assertFalse(T.ack_is_echo(self.rep, (5, self.rep[:32]), self.ranges))
+
+    def test_wrong_rid_rejected_even_with_ranges(self):
+        self.assertFalse(T.ack_is_echo(self.rep, (0x99, self.rep), self.ranges))
+
+    def test_start_report_compared_strictly(self):
+        # START にはデータ部が無いため許容範囲を渡さない。1 バイトの差で不合格。
+        s = fw.start_report(64)
+        e = bytearray(s)
+        e[4] = 0xFF
+        self.assertFalse(T.ack_is_echo(s, (5, bytes(e))))
+
 
 if __name__ == "__main__":
     unittest.main()

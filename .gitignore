@@ -2,3 +2,8 @@ __pycache__/
 *.pyc
 *.exe
 *.bin
+.DS_Store
+
+# ユーザーが配置する公式ファームウェアファイル（.zip 等も含めて除外）
+exe_here/*
+!exe_here/.gitkeep
