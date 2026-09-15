@@ -7,3 +7,7 @@ __pycache__/
 # ユーザーが配置する公式ファームウェアファイル（.zip 等も含めて除外）
 exe_here/*
 !exe_here/.gitkeep
+
+# 解析資料（旧 magi65_fw）。ファームウェアのバイナリと Windows 製 OTA ツールの
+# 逆コンパイル結果を含むため追跡しない
+reference/
