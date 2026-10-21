@@ -112,6 +112,38 @@ class ValidateTest(unittest.TestCase):
         self.assertRaises(ValueError, fw.validate_identity,
                           {"vid": 0x1234, "pid": 0x5055, "usage_page": 0xFFEF, "report_id": 5})
 
+    def _file(self, name, inner=None):
+        path = os.path.join(tempfile.mkdtemp(), name)
+        if inner is None:
+            with open(path, "wb") as f:
+                f.write(b"MZ")
+        else:
+            with zipfile.ZipFile(path, "w") as z:
+                z.writestr(inner, b"MZ")
+                z.writestr("__MACOSX/._" + inner, b"")
+        return path
+
+    def test_model_verified_passes(self):
+        fw.validate_model(self._file("MG65-CSF6C4-V0120-20260120.exe"))
+        fw.validate_model(self._file("mg65-csf6c4-v0130-20270101.EXE"))
+        fw.validate_model(self._file("MG65-CS0164-V0121-20260302.exe"))
+
+    def test_model_unverified_or_unparsable_rejected(self):
+        for name in ("MG65-XX9999-V0130-20270101.exe",          # 未知の型番
+                     "MG65-CS0164-V0130-20270101.exe",          # CS0164 の未確認版
+                     "MG65-CSF6C4-V0120-20260120 (1).exe",      # 再ダウンロードで付く連番
+                     "firmware.exe"):
+            self.assertRaises(ValueError, fw.validate_model, self._file(name))
+
+    def test_model_zip_uses_inner_name(self):
+        fw.validate_model(self._file("download (1).exe.zip", inner="MG65-CSF6C4-V0120-20260120.exe"))
+        self.assertRaises(ValueError, fw.validate_model,
+                          self._file("MG65-CSF6C4-V0120-20260120.exe.zip", inner="MG65-XX9999-V0130-20270101.exe"))
+
+    def test_model_override_allows(self):
+        fw.validate_model(self._file("MG65-XX9999-V0130-20270101.exe"), allow_unverified=True)
+        fw.validate_model(self._file("firmware.exe"), allow_unverified=True)
+
     def test_header_filler_ok(self):
         self.assertTrue(fw.header_filler_ok(_mk(64)))
         bad = bytearray(_mk(64)); bad[0] = 0x00

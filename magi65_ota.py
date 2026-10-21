@@ -33,6 +33,10 @@ def parse_args(argv=None):
         "--i-understand-brick-risk", action="store_true", dest="i_understand_brick_risk",
         help="--flash 実行の前提となる同意フラグ",
     )
+    p.add_argument(
+        "--allow-unverified-model", action="store_true", dest="allow_unverified_model",
+        help="--flash で、ファイル名の型番が動作未確認・判別不能でも書き込む",
+    )
     p.add_argument("--report-len", type=int, default=64, dest="report_len")
     p.add_argument("--timeout", type=float, default=2.0)
     return p.parse_args(argv)
@@ -266,6 +270,7 @@ def main(argv=None):
     try:
         body, expected_crc = load_and_validate(args.exe)
         if args.flash:
+            fw.validate_model(args.exe, args.allow_unverified_model)
             return do_flash(args, body, expected_crc)
         if args.check:
             return do_check(args, body)

@@ -2,9 +2,11 @@
 Task 2: ポート from mac_ota/ota_flash.py
 Task 3: .exe/.exe.zip からの .NET マネージドリソース抽出（extract_from_exe/parse_param）
 """
+import os
+import re
 import struct
 import zipfile
-from .constants import REPORT_ID, HEADER_LEN, CHUNK, MAX_PKTS_PER_REPORT, MIN_REPORT_LEN, MAGI65_TUPLE
+from .constants import REPORT_ID, HEADER_LEN, CHUNK, MAX_PKTS_PER_REPORT, MIN_REPORT_LEN, MAGI65_TUPLE, VERIFIED_MODELS
 
 def crc16(data: bytes) -> int:
     crc = 0xFFFF
@@ -84,6 +86,16 @@ BYTEARRAY = 0x20   # ResourceTypeCode.ByteArray
 _STREAM = 0x21     # ResourceTypeCode.Stream（ByteArray と同じ長さ表現）
 
 
+def _zip_exe_names(z):
+    """ZIP 内の .exe 名（macOS のリソースフォーク等を除く）。"""
+    return [
+        n for n in z.namelist()
+        if n.lower().endswith(".exe")
+        and not n.startswith("__MACOSX/")
+        and not n.rsplit("/", 1)[-1].startswith("._")
+    ]
+
+
 def _iter_exes(path):
     """path が ZIP なら内部の .exe を（ちょうど1個であることを確認して）取り出す。
     ZIP でなければそのままファイル全体を返す。
@@ -92,12 +104,7 @@ def _iter_exes(path):
         head = f.read(4)
     if head[:4] == b"PK\x03\x04":
         with zipfile.ZipFile(path) as z:
-            exes = [
-                n for n in z.namelist()
-                if n.lower().endswith(".exe")
-                and not n.startswith("__MACOSX/")
-                and not n.rsplit("/", 1)[-1].startswith("._")
-            ]
+            exes = _zip_exe_names(z)
             if len(exes) != 1:
                 raise ValueError(f"ZIP 内 EXE が {len(exes)} 個（1 個であること）")
             with z.open(exes[0]) as fh:
@@ -264,6 +271,48 @@ def validate_identity(param: dict) -> None:
     got = (param["vid"], param["pid"], param["usage_page"], param["report_id"])
     if got != MAGI65_TUPLE:
         raise ValueError(f"識別値が Magi65 と不一致: {got} != {MAGI65_TUPLE}（別機種の updater?）")
+
+_EXE_NAME_RE = re.compile(r"(MG65)-([A-Z0-9]+)-V(\d+)-(\d{8})\.exe", re.IGNORECASE | re.ASCII)
+
+def parse_exe_name(name):
+    """公式 updater の .exe 名から {"model", "version"} を返す。形式外なら None。"""
+    m = _EXE_NAME_RE.fullmatch(name.rsplit("/", 1)[-1])
+    if m is None:
+        return None
+    return {"model": m.group(2).upper(), "version": m.group(3)}
+
+def updater_exe_name(path) -> str:
+    """型番の判定に使う .exe 名。ZIP なら中身の .exe 名（外側の名前は改名されうるため）。"""
+    with open(path, "rb") as f:
+        is_zip = f.read(4) == b"PK\x03\x04"  # _iter_exes と同じ判定
+    if is_zip:
+        with zipfile.ZipFile(path) as z:
+            exes = _zip_exe_names(z)
+        if len(exes) != 1:
+            raise ValueError(f"ZIP 内 EXE が {len(exes)} 個（1 個であること）")
+        return exes[0]
+    return os.path.basename(path)
+
+def validate_model(path, allow_unverified: bool = False) -> None:
+    """updater の .exe 名の型番・版が動作確認済みでなければ拒否する。
+
+    識別値（VID/PID 等）は型番違いでも同一なので、型番はファイル名でしか判別できない。
+    allow_unverified=True なら、未確認・判別不能でも通す。
+    """
+    if allow_unverified:
+        return
+    name = updater_exe_name(path)
+    info = parse_exe_name(name)
+    if info is None:
+        reason = (f"ファイル名 {name!r} から型番を読み取れない（公式の MG65-<型番>-V<版>-<日付>.exe 形式ではない）。"
+                  "ダウンロードしたときの名前に戻す（末尾の ' (1)' などを消す）")
+    elif info["model"] not in VERIFIED_MODELS:
+        reason = f"型番 {info['model']} は動作未確認（確認済み: {', '.join(VERIFIED_MODELS)}）"
+    elif VERIFIED_MODELS[info["model"]] is not None and info["version"] not in VERIFIED_MODELS[info["model"]]:
+        reason = f"型番 {info['model']} の V{info['version']} は動作未確認（確認済みの版: {', '.join('V' + v for v in sorted(VERIFIED_MODELS[info['model']]))}）"
+    else:
+        return
+    raise ValueError(f"{reason}。別機種のファームの恐れがあるため拒否。承知の上で進めるなら --allow-unverified-model を付ける。")
 
 def header_filler_ok(code_2m: bytes) -> bool:
     return code_2m[0:48] == b"\x56" * 48

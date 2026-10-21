@@ -34,12 +34,12 @@ Then put the keyboard into **USB wired mode** and connect it directly to your Ma
 
 ### 1. Obtain the official firmware updater and put it in `exe_here/`
 
-The firmware itself is not bundled with this tool. Download the official updater `.exe` for your model (Magi65 ANSI/CSF6C4) from the IQUNIX website and place it in `exe_here/` at the repository root. If you downloaded a `.zip`, extract it and place the `.exe` from inside.
+The firmware itself is not bundled with this tool. Download the official updater `.exe` for your model (Magi65 ANSI/CSF6C4) from the IQUNIX website and place it in `exe_here/` at the repository root. If you downloaded a `.zip`, extract it and place the `.exe` from inside. **Do not rename the file.** Flashing checks the model code in the file name (see "Risks and disclaimer").
 
 ```
 magi65-mac-fw-builder/
 ├── exe_here/
-│   └── Magi65_xxxx.exe   ← put exactly one official .exe here
+│   └── MG65-CSF6C4-V0120-20260120.exe   ← put exactly one official .exe here
 ├── magi65_ota.py
 └── ...
 ```
@@ -97,6 +97,7 @@ If the reported CRC matches the CRC at the end of the official firmware body, th
 | `--check` | Connect to the device and query the version only (no flashing) |
 | `--flash` | Write the firmware to the device |
 | `--i-understand-brick-risk` | Consent flag required by `--flash` |
+| `--allow-unverified-model` | With `--flash`, write even if the model code in the file name is unverified or cannot be read |
 | `--report-len <int>` | HID report length (default 64) |
 | `--timeout <float>` | Timeout in seconds when waiting for a device response (default 2.0) |
 
@@ -106,6 +107,7 @@ If the reported CRC matches the CRC at the end of the official firmware body, th
 - No simple user-level recovery path (DFU or similar) has been confirmed. Hardware-level recovery (Telink BDT, reflashing through the PCB pads) may be possible but is unverified, and would require disassembly and dedicated equipment.
 - The data this tool sends is based on protocol analysis of the official updater (decompilation) and on successful flashing of a single physical unit. **Safety on all units and in all situations is not guaranteed. Use at your own risk.**
 - The tool rejects any updater file or device that does not match the fixed Magi65 identifiers (VID=`0x320F` / PID=`0x5055` / UsagePage=`0xFFEF` / ReportID=`5`). Note, however, that this **cannot distinguish between model variants that share the same VID/PID**. Always use the official file for your own model.
+- Because the model code can only be read from the official file name (`MG65-<model>-V<version>-<date>.exe`; for a `.zip`, the `.exe` name inside), `--flash` refuses files whose model and version are not verified. Verified: `CSF6C4` (all versions) and `CS0164` `V0121`. Names that do not follow the official format (such as the ` (1)` added on re-download) are refused too, so restore the original name. Add `--allow-unverified-model` only when you knowingly flash an unverified version.
 
 ### Limits of firmware integrity validation
 
