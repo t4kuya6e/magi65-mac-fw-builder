@@ -26,11 +26,11 @@ def parse_completion(data):
     return None
 
 def ack_is_echo(sent: bytes, resp, maskable_ranges=()) -> bool:
-    # ACK は送信レポート全体のエコー（OTA_PROTOCOL.md §13）。
+    # ACK は送信レポート全体のエコー（OTA_PROTOCOL.md §6.2）。
     # rid==5（レビュー指摘 Medium2, END/version-gate と対称）、送信全長が一致（レビュー指摘 High#1）を要求。
     # maskable_ranges（DATA のデータ部）に限り、デバイスが 0xFF を返すことを許容する。
     # OTA 完走までブートマジックを未書き込み（0xFF）のまま保持する挙動への対応
-    # （2026-07-26 実機 V0120 観測。OTA_PROTOCOL.md「V0120 での ACK 挙動の変化」を参照）。
+    # （V0120 以降の実機挙動。OTA_PROTOCOL.md §6.2 と §9 を参照）。
     # フレームヘッダ・パケット index・パケット CRC は厳密照合を維持し、
     # 古い応答・重複レポート・順序ずれは従来どおり検出する。
     if resp is None:

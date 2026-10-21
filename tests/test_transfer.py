@@ -25,7 +25,7 @@ class FakeDevice:
         self.wrong_version_rid = wrong_version_rid; self.wrong_end_rid = wrong_end_rid
         # V0120 実機挙動: チャンク2（body[32:48]）先頭の Telink ブートマジックを
         # 0xFF にマスクしてエコーする
-        # （docs/OTA_PROTOCOL.md「V0120 での ACK 挙動の変化」）。
+        # （docs/OTA_PROTOCOL.md §6.2「ACK」）。
         self.mask_boot_magic = mask_boot_magic
         self.sent = []; self.addrs = []; self.packets = []; self._n = 0
     def send_and_wait(self, report):

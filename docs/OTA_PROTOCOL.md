@@ -1,177 +1,150 @@
-# IQUNIX Magi65 USB OTA 仕様分析ドキュメント
+# IQUNIX Magi65 USB OTA プロトコル
 
 | | |
 |---|---|
-| 対象 | `MG65-CSF6C4-V0120-20260120.exe`（IQUNIX Magi65 ファーム更新ツール） |
-| 目的 | Windows 専用ツールの通信仕様を解明し、macOS ネイティブ実装の根拠とする |
-| 解析手法 | .NET アセンブリの静的解析のみ（`monodis` で IL、`ilspycmd 8.2` で C# 逆コンパイル）。**実機への書き込みは未実施** |
-| 生成物 | 逆コンパイル C#（約3163行）と抽出ファーム（`code_2M` / `param_128K`）。※逆コンパイル成果物・ファーム本体は本リポジトリには同梱しない（各自が公式 updater から取得・抽出する） |
-| 作成日 | 2026-07-11 |
+| 対象機種 | IQUNIX Magi65（ANSI、型番 CSF6C4）。USB VID `0x320F` / PID `0x5055` |
+| 対象ファイル | 公式 updater `MG65-CSF6C4-V0120-20260120.exe`、`MG65-CS0164-V0121-20260302.exe` |
+| 根拠 | updater（.NET）の逆コンパイル、デバイス側ファーム（V0121）の静的解析、実機での書き込み |
 
-> **信頼度の表記**: 各項に［確定］＝逆コンパイル済みコードから直接読み取れる事実 ／［推定］＝コードのロジックからの推論で実機未検証、を付す。
+本リポジトリには updater・ファーム本体・逆コンパイル結果を同梱しない。各自が公式 updater から取得・抽出する。
 
----
-
-## 0. TL;DR
-
-- 実体は Telink チップの **USB HID OTA**。通信は暗号化なしの平文［確定］。
-- OTA は **Usage Page `0xFFEF`（ベンダー独自ページ）** のHIDインターフェース経由［確定］。macOS はベンダーページを制限しないため、`hidapi` でネイティブ実装可能［推定・信頼度高］。
-- 4種のコマンド（バージョン照会 / START / DATA / END）と ACK 駆動の同期転送で成立［確定］。
-- 文鎮化リスクと復旧手段は実機依存で**未確認**。
-  - **2026-10-21 追記**: デバイス側ファーム（V0121）の解析で、Telink 標準のデュアルバンク方式と確認した。新イメージの起動フラグは END の確定処理まで無効のままなので、転送が途中で止まっても旧ファームで起動する（§14）。
+> **信頼度の表記**: ［確定］＝コードから直接読み取れる、または実機で確認した事実 ／［推定］＝コードのロジックからの推論で、実機では確かめていない。
 
 ---
 
-## 1. アセンブリ構成
+## 0. 要点
 
-- .NET Framework 4.0 WinForms（内部名 `USB_OTA`、PDBパス `...\usb ota\KM_USB_mode_ota_pc_v5.0.2\ota_app\obj\x86\Release\USB_OTA.pdb`）。
-- Win32 API を P/Invoke: `setupapi.dll`(SetupDi*), `hid.dll`(HidD_*/HidP_*), `kernel32.dll`(CreateFile/ReadFile/WriteFile 等)。
-- 埋め込み .NET リソース `WindowsFormsApplication1.Properties.Resources.resources`（2.26MB）に4エントリ:
+- Telink チップ（RISC-V）の **USB HID OTA**。通信は暗号化なしの平文［確定］。コアは Andes V5 系［推定］
+- OTA は **Usage Page `0xFFEF`（ベンダー定義）** の HID インターフェースで行う［確定］
+- コマンドはバージョン照会と OTA（START / DATA / END）の 2 系統。ACK 駆動の同期転送［確定］
+- コマンド値と結果コードは Telink 標準の OTA 定義と一致する［確定］
+- **デュアルバンク方式**。新しいイメージは END の確定処理まで起動対象にならず、転送が途中で止まっても旧ファームで起動する［確定］
+- 古い版への書き戻し（ダウングレード）は拒否されない［確定］
+
+---
+
+## 1. updater の構成 ［確定］
+
+- .NET Framework 4.0 の WinForms アプリ（内部名 `USB_OTA`）。Win32 の `setupapi.dll` / `hid.dll` / `kernel32.dll` を P/Invoke で呼ぶ
+- 埋め込みリソース `WindowsFormsApplication1.Properties.Resources.resources`（`.resources` 形式、マジック `0xBEEFCACE`）に次の 4 エントリがある
 
 | リソース名 | 型 | サイズ | 内容 |
 |---|---|---|---|
-| `code_2M` | ByteArray | 2,097,152 | メインファーム（2MB枠。実データ ~126KB） |
-| `param_128K` | ByteArray | 131,072 | 設定パラメータ（VID/PID等。実データ ~90B） |
-| `right` | Bitmap | — | 成功アイコン |
-| `wrong` | Bitmap | — | 失敗アイコン |
+| `code_2M` | ByteArray | 2,097,152 | ファーム（2MB 枠。実データは約 126KB） |
+| `param_128K` | ByteArray | 131,072 | 識別パラメータ（実データは約 90B） |
+| `right` / `wrong` | Bitmap | — | 成功・失敗アイコン |
 
-抽出は `.resources` 形式（マジック `0xBEEFCACE`）を直接パースして実施。
+- デバイスに書き込むのは `code_2M` の本体だけ。`param_128K` は識別に使うだけで送信しない
+- 処理（IL）は V0120 と V0121 で同一。違うのは埋め込みのファームだけ
 
 ---
 
-## 2. デバイス識別（オープン条件） ［確定］
+## 2. デバイス識別 ［確定］
 
-`load_param()`（decompiled.cs:1279付近）が `param_128K` から ASCII 文字列として読む:
+### updater の識別値（`param_128K`）
 
-| 項目 | param オフセット | バイト | 解釈 |
+| 項目 | オフセット | 値 | 用途 |
 |---|---|---|---|
-| enc_key | 48–63 (16B) | `11 22 33 44 55 66 77 88 99 aa bb cc dd ee ff 00` | 16バイト鍵。**OTA送信経路では未使用**（`enc_key` は代入のみで参照なし。別機能の名残） |
+| enc_key | 48–63 | `11 22 … ff 00` | OTA の送信経路では使わない |
 | VID | 64–67 | `"320F"` | `0x320F` |
 | PID | 68–71 | `"5055"` | `0x5055` |
-| ReportID | 72–73 | `"05"` | `5`（`usb_Form_Load` で `report_id = Convert.ToByte("05")`。フィールド初期値6は上書きされる） |
-| UsagePage | 80–（0xFF終端） | `"FFEF"` | `0xFFEF`（`interface_textBox` 経由で usagePage に） |
-| IID | 256–（0xFF終端） | `"Mouse_USB_OTA"` | バイナリ上は存在するが**コードは長さを数えるだけで未使用**（decompiled.cs:1296-1298）。画面の `IID=` ラベルは実際には interface_textBox＝UsagePage 文字列から生成される（decompiled.cs:1303-1306）。デバイス選択には**使われない** |
+| ReportID | 72–73 | `"05"` | `5` |
+| UsagePage | 80–（`0xFF` 終端） | `"FFEF"` | `0xFFEF` |
+| IID | 256–（`0xFF` 終端） | `"Mouse_USB_OTA"` | 使わない |
 
-デバイス検索 `findDevice(vid,pid,usagePage,usage=0,...)`（decompiled.cs:446）の一致条件:
+updater は `VendorID == 0x320F && ProductID == 0x5055 && UsagePage == 0xFFEF` の HID を開く。
+識別値は型番違い（CSF6C4 / CS0164）でも同一で、型番は updater のファイル名にしか現れない。
 
-```
-HIDAttrib.VendorID == 0x320F && HIDAttrib.ProductID == 0x5055 && HIDP_CAPS.UsagePage == 0xFFEF
-```
+### 実機の HID 構成（macOS）
 
-- 読み・書き同一ハンドル。`InputReportByteLength` / `OutputReportByteLength` / `FeatureReportByteLength` は HID caps から取得（**実機依存の実行時値**。exe 静的解析では不明）。
-- macOS 対応上の含意: Usage Page 0xFFEF はベンダー定義領域(0xFF00–0xFFFF)。macOS の HID アクセス制限（汎用デスクトップのキーボード/マウスを保護）に該当しないため、IOKit/hidapi から開ける見込み［推定・信頼度高。VIA/QMK Toolbox が同種インターフェースを Mac で扱える事実が傍証］。
+| インターフェース | Usage Page / Usage | レポート長 | 用途 |
+|---|---|---|---|
+| 0 | `0x0001/0x0006` | 入力 8 | キーボード（システムが排他で保持） |
+| 1 | `0xFF60/0x61` | 32 | VIA の raw HID |
+| 2 | `0x0001/0x0006`、`0x0001/0x0080`、**`0xFFEF/0x00`**、`0x000C/0x01`、`0x0001/0x0002`、`0x0001/0x0001` | 入出力・Feature とも 64 | **OTA**（キーボード・consumer・マウス等と同居） |
+| — | `0xFF1C/0x92` | 64 | 用途未確認 |
 
----
+- Product は "IQUNIX MG65 Mechanical Keyboard"、Manufacturer は "RDR"。シリアル番号は無い
+- bcdDevice はファームの版を表す（V0120 は `0x0120`、V0121 は `0x0121`）。型番は表さない
 
-## 3. ファーム本体（code_2M）のレイアウトと取り出し ［確定］
+### macOS からのアクセス
 
-`load_param()`（decompiled.cs:1307–1321）:
-
-```csharp
-source_bin_size = code_bin[48]*256^3 + code_bin[49]*256^2 + code_bin[50]*256 + code_bin[51];  // ビッグエンディアン
-for (l=0; l<source_bin_size; l++) source_binchar[l] = code_bin[256 + l];                       // 本体は offset 256 以降
-for (m=0; m<16; m++) source_binchar[source_bin_size + m] = 0xFF;                                // 末尾を0xFFで16バイト分パディング
-bin_crc = BitConverter.ToUInt32(source_binchar, source_bin_size - 4);                           // 本体末尾4バイト=CRC
-```
-
-抽出結果:
-
-| 項目 | 値 |
-|---|---|
-| ヘッダ長 | 256 バイト（offset 0–255。うち先頭~48Bは 0x56 フィラー） |
-| サイズフィールド | `code_2M[48..51]` = `00 01 F6 74`（BE）= **128628 バイト (0x1F674)** |
-| 本体 | `code_2M[256 .. 256+128628]` |
-| 本体末尾CRC | `0x01020FA4`（本体の最後4バイト。LE） |
-| 16B境界パディング後 | 128640 バイト → **8040 チャンク**（16バイト/チャンク、index 0..8039） |
-
-`check_bin_is_ok()`（decompiled.cs:1737）は `bin_crc==0 || bin_crc==0xFFFFFFFF` を弾くだけの簡易チェック（転送の検証ではない）。
-
-> 注: `param_128K` は識別情報の読み出し専用で、**書き込み対象ではない**（送信経路に param を流すコードは存在しない）。書き込むのは `code_2M` の本体のみ。
+- hidapi（cython-hidapi）は使えない。既定で排他（seize）オープンするため、キーボードと同居する OTA インターフェースでは `IOHIDDeviceOpen` が `kIOReturnNotPrivileged`（`0xE00002C1`）になる
+- **IOKit を直接呼び、`kIOHIDOptionsTypeNone`（非排他）で開く**。root は要らない（`magi65_fw_builder/iokit_hid.py`）
+- レポートの送受信には、ツールを起動するアプリに TCC「入力監視」の権限が要る。無いと `IOHIDDeviceSetReport` が `kIOReturnNotPermitted`（`0xE00002E2`）になる
 
 ---
 
-## 4. レポート構造（ホスト→デバイス） ［確定］
-
-送信は `user_sendDataToDevice(sendType, buf, len, ...)`（decompiled.cs:1571）で行う。`sendReportDataBuf` を組み立て:
+## 3. ファーム本体のレイアウト ［確定］
 
 ```
-Array.Clear(sendReportDataBuf, 0, OutputReportByteLength);   // 0クリア
-sendReportDataBuf[0] = report_id;                            // = 5
-for (i=0; i<len; i++) sendReportDataBuf[i+1] = buf[i];       // buf(=sen) を [1] 以降へコピー
+size = code_2M[48..51]（ビッグエンディアン）
+body = code_2M[256 .. 256+size]           # 先頭 48 バイトは 0x56 のフィラー
+crc  = body[size-4 .. size]（リトルエンディアン）
+送信用 = body + 0xFF を 16 バイト境界まで  # 16 バイト = 1 チャンク
 ```
 
-送信方式は3種（`SENDTYPE`）。OTA では全て `WRITE`（HID出力ストリーム書き込み `hidDevice.Write(sendReportDataBuf, 0, OutputReportByteLength)`）を使用。FEATURE(`HidD_SetFeature`)/OUTPUT(`HidD_SetOutputReport`)は未使用経路。
+- updater の簡易チェックは `crc == 0` と `crc == 0xFFFFFFFF` を弾くだけ
+- body[0x20..0x23] は Telink の起動フラグ `"KNLT"`。デバイスはこれが無いイメージを拒否する（§9）
 
-`sen` バッファ（＝ペイロード）の共通ヘッダ:
+| | V0120 | V0121 |
+|---|---|---|
+| size | 128,628（`0x1F674`） | 128,596 |
+| チャンク数 | 8,040 | 8,038 |
+| 末尾 CRC | `0x01020FA4` | `0x55EA5AC6` |
+
+---
+
+## 4. レポート構造（ホスト → デバイス） ［確定］
+
+レポートは常に出力レポート長（実機では 64 バイト）で送る。先頭は report_id `0x05`。
 
 ```
-sen[0] = コマンド種別（1=バージョン照会, 2=OTA）
-sen[1] = 有効ペイロード長
-sen[2] = 0x00
-sen[3..] = 各コマンド固有のペイロード（オフセット num=3 から）
+[05] [cmd] [len] [00] [payload …] [パディング]
+      cmd: 1=バージョン照会, 2=OTA
+      len: payload の有効バイト数
 ```
 
-最終的にデバイスへ渡るレポート = `[report_id] + sen のコピー`（送信は常に `OutputReportByteLength` バイト固定）。
+- OTA（START / DATA / END）のパディングは `0xFF`
+- updater はバージョン照会で 32 バイトだけをバッファへコピーするため、33 バイト目以降は `0x00` になる
+- DATA は最大 3 パケット（1 + 3 + 60 = 64 バイト）なので、出力レポートは 64 バイト以上が要る
 
-> **パディングの実体（重要）**: `user_sendDataToDevice` は `sendReportDataBuf` を **0 クリア**した後 `[0]=report_id`、`[1..len]=sen[0..len-1]` をコピーする（decompiled.cs:1581-1586）。埋め値は「0」ではなく **`sen` の中身**で決まる:
-> - **OTA（START/DATA/END）**: `sen` を事前に **0xFF 全埋め**し（decompiled.cs:1653-1656）、`len=OutputReportByteLength` で丸ごとコピーする（decompiled.cs:1733）。→ 末尾パディングは **0xFF**。
-> - **バージョン照会**: `len=32` しかコピーしない（decompiled.cs:1821）。→ `sen` 由来の 0xFF は途中まで、それ以降（32バイト目以降）は 0 クリアのまま **0x00**。
->
-> **最小レポート長の要件**: DATA は最大 3 パケット＝ report_id(1)+ヘッダ(3)+パケット(60) = **最低 64 バイト**の出力レポートが必要。バージョン応答は **最低 12 バイト**の入力レポートが必要。コードは HID caps を取得するだけでこの下限を検証しないので、macOS 実装側で確認すること。
+### 4.1 バージョン照会
 
-### 4.1 バージョン照会（読み取り検証で使用） ［確定］
-`getFwVersionToolStripMenuItem_Click`（decompiled.cs:1809）:
 ```
-sen を 0xFF で埋め → sen[0]=1, sen[1]=0, sen[2]=0 → user_sendDataToDevice(WRITE, sen, 32)
+05 | 01 00 00 | FF … | 00 …
 ```
-実際にデバイスへ書くレポート（**常に OutputReportByteLength バイト**）:
-```
-[05] [01 00 00] [FF×29] [00 … 00]
- ^rid ^payload   ^sen由来  ^32バイト目以降は0クリア
-```
-- **注意**: 引数の `32` は「`sen` から送信バッファへコピーするバイト数」であって USB 書き込み長ではない。実書き込み長は `OutputReportByteLength`（decompiled.cs:1618-1620）。macOS で `hid_write(..., 32)` としない。レポート全長で書くこと。
 
-### 4.2 START ［確定］
-`ota_write()` の `start_ota_flag==1` 分岐:
-```
-sen[0]=2, sen[1]=2, sen[2]=0, sen[3]=1, sen[4]=0xFF
-```
-レポート: `05 | 02 02 00 | 01 FF | FF...(OutputReportByteLength まで pad)`
-（ペイロード `01 FF` = リトルエンディアン `0xFF01` = OTA開始）
+### 4.2 START
 
-### 4.3 DATA ［確定］
-`ota_write()` の `start_ota_flag==2` 分岐。1レポートに **20バイトパケット×最大3個** を格納。
+```
+05 | 02 02 00 | 01 FF | FF …          # 0xFF01（LE）= CMD_OTA_START
+```
 
-各20バイトパケット:
-```
-[0..1]   addr = ota_index（LE, 16bit）
-[2..17]  firmware[ota_index*16 .. +16]（16バイト。末尾チャンクは0xFFパディング済み）
-[18..19] CRC16（先頭18バイト = addr(2)+data(16) に対して, LE）
-```
-- `sen[0]=2, sen[1]=有効バイト数(20/40/60), sen[2]=0, sen[3..]=パケット列`
-- `ota_index` は 0 から +1。`ota_index*16 >= source_bin_size+16` になる直前で停止（末尾の余剰1パケットは `sen[1]` に計上されず破棄 → 実送信は index 0..8039）。
+### 4.3 DATA
 
-レポート: `05 | 02 <len> 00 | <pkt0><pkt1><pkt2> | FF...`
+1 レポートに 20 バイトのパケットを最大 3 個入れる。
 
-### 4.4 END ［確定］
-DATA ループで送るデータが尽きた（`sen[1]==0`）時:
 ```
-sen[0]=2, sen[1]=6, sen[2]=0
-sen[3]=2, sen[4]=0xFF                       // 0xFF02 = OTA終了
-num3 = ota_index-1                           // 最終index = 8039
-sen[5..6] = num3 (LE)
-num4 = (0x10000 - num3) & 0xFFFF             // num3 の2の補数
-sen[7..8] = num4 (LE)
+05 | 02 <len=20/40/60> 00 | <pkt0><pkt1><pkt2> | FF …
+
+pkt = index（LE 16bit） + body[index*16 .. +16] + CRC16（先頭 18 バイトに対して, LE）
 ```
-レポート: `05 | 02 06 00 | 02 FF <last_lo><last_hi> <inv_lo><inv_hi> | FF...`
+
+index は 0 から 1 ずつ増やし、最終チャンクまで送る。
+
+### 4.4 END
+
+```
+05 | 02 06 00 | 02 FF | last（LE 16bit） | (0x10000 - last) & 0xFFFF（LE 16bit） | FF …
+                 # 0xFF02（LE）= CMD_OTA_END、last = 最終 index
+```
 
 ---
 
 ## 5. CRC16 ［確定］
 
-`crc16(byte[] pD, int len)`（decompiled.cs:1631）:
-- テーブル `{0x0000, 0xA001}`（多項式 0xA001＝reflected 0x8005 / IBM-CRC16）
-- 初期値 `0xFFFF`、最終XORなし、入出力とも反射（reflected）
+多項式 `0xA001`（IBM CRC16 の反射形、Modbus と同じ）、初期値 `0xFFFF`、最終 XOR なし。
 
 ```python
 def crc16(data: bytes) -> int:
@@ -186,259 +159,32 @@ def crc16(data: bytes) -> int:
 
 ---
 
-## 6. ハンドシェイク（ACK駆動ペーシング） ［確定］
+## 6. 応答（デバイス → ホスト） ［確定］
 
-転送は Windows 側の連続非同期読み取り（`BeginAsyncRead`→`ReadCompleted`→`Read_File_Data_Process_YKQ`, decompiled.cs:1441/1511）で駆動:
+入力レポートは report_id 込みで届く（先頭バイトが `0x05`）。1 回の送信に対して入力レポートが 1 つ返る。
 
-1. `OtaStart_button_Click`: `start_ota_flag=1` にして `ota_write()`（START送信）。
-2. デバイスが入力レポートを返す（＝ACK）。
-3. `Read_File_Data_Process_YKQ`: 失敗応答でなく `start_ota_flag!=0` なら `ota_write()` を再実行（次DATA送信）。以降 2–3 を全チャンク分繰り返す。
-4. 最終的に END を送信。
-5. 完了応答を受信。
-
-> ［推定・信頼度高］この設計は「1レポート送信につきデバイスが入力レポート1つを返す」ことを前提とする。ACKの中身はDATA中は検査されず、受信イベント自体がペーシングのトリガ。Mac実装では「WRITE→入力レポートを1つread（タイムアウト付き）→次WRITE」の同期ループで再現するのが忠実。
-
-### 完了応答（デバイス→ホスト, report_id=5） ［確定］
-`Read_File_Data_Process_YKQ`（decompiled.cs:1521）:
-```
-readFileDataBuf[0..5] == {05, 02, 03, 00, 06, FF}
-readFileDataBuf[6] == 0  → "OTA Success"
-readFileDataBuf[6] != 0  → "OTA Fail=<code>"
-```
-
-### バージョン照会応答 ［確定］
-```
-readFileDataBuf[0..3] == {05, 01, 08, 00}
-readFileDataBuf[4..7]  = version (LE uint32)
-readFileDataBuf[8..11] = crc (LE uint32)
-```
-
----
-
-## 7. 転送シーケンス（擬似コード）
+### 6.1 バージョン照会の応答
 
 ```
-open HID (VID=0x320F, PID=0x5055, UsagePage=0xFFEF)   # report_id=5
-send  [05, 02,02,00, 01,FF, pad...]                    # START
-wait  input report (ACK)
-idx = 0
-body = code_2M[256:256+size]; body += 0xFF * ((-size)%16)   # 16B境界へパディング
-n_chunks = len(body)//16                                # = 8040
-while idx < n_chunks:
-    pkts = []
-    for _ in range(min(3, n_chunks-idx)):
-        a = u16le(idx); d = body[idx*16:idx*16+16]
-        pkts += a + d + u16le(crc16(a+d)); idx += 1
-    send [05, 02, len(pkts), 00] + pkts + pad
-    wait input report (ACK)
-last = n_chunks - 1                                     # = 8039
-inv  = (0x10000 - last) & 0xFFFF
-send [05, 02,06,00, 02,FF, u16le(last), u16le(inv), pad]  # END
-wait completion [05,02,03,00,06,FF, result]; result==0 → 成功
+05 01 08 00 | version（LE 32bit） | crc（LE 32bit）
 ```
 
----
+- version は V0120・V0121 とも `0`。使えるのは crc（書き込まれているファーム本体の末尾 CRC）だけ
+- 書き込み直後の再接続では、旧ファームの crc が 1 回返ることがある
 
-## 8. 検証用テストベクタ（`code_2M.bin` から算出） ［確定］
+### 6.2 ACK（START / DATA）
 
-本体先頭16バイト = `25 a0 00 00 00 00 5d 02 00 00 00 00 00 00 00 00`
+- デバイスは受け取ったレポートをそのまま返す
+- 例外が 1 つある。DATA で body[0x20]（起動フラグ `"KNLT"` の先頭 `0x4B`）を含むパケットは、そのバイトを `0xFF` にして返す。デバイスが起動フラグを無効にして書いた内容を返している（§9）［推定］
+- updater は ACK の中身を検査せず、受信そのものを次の送信の合図にしている
 
-| index | CRC16 | 20バイトパケット(hex) |
-|---|---|---|
-| 0 | `0xCC80` | `0000 25a0000000005d02000000000000000 0 80cc` → `000025a0000000005d02000000000000000080cc` |
-| 1 | `0x11B1` | `010000000000000000 0074f6010000000000 b111` → `0100000000000000000074f6010000000000b111` |
-| 8039 | `0xC487` | `671f a40f0201ffffffffffffffffffff ffff 87c4` → `671fa40f0201ffffffffffffffffffffffff87c4` |
-
-- 総サイズ 128628 / パディング後 128640 / チャンク 8040 / 最終index 8039(0x1F67)。
-- END ペイロード: `02 FF 67 1F 99 E0`（last=0x1F67, inv=0xE099）。
-- index 8039 のデータ末尾に本体CRC `a4 0f 02 01`(=0x01020FA4) が現れる（本体末尾4バイトと一致）。
-
----
-
-## 9. 前提条件・注意 ［確定/公式手順］
-
-- キーボードを **USB 有線モード**にする（公式手順: `FN + T` / `FN + 5`）。
-- 転送中断はファーム破損の恐れ。**復旧用ブートローダの有無は未確認**。
-  - **2026-10-21 追記**: 専用のブートローダは無いが、デュアルバンク方式のため中断しても旧ファームで起動する（§14）。失敗した後は、キーボードを抜き差ししてから再試行する［推定］。
-- 書き込むのは `code_2M` 本体のみ。`param_128K` は読み出し専用。
-
----
-
-## 10. macOS 検証ツール計画（ステップ①: バージョン照会のみ）
-
-> **正確な位置づけ**: これは「ファーム書き込みを行わない」ツールであって「デバイスへ一切書き込まない」ツールではない。バージョン照会は **HID 出力レポートを実際に送信する**（decompiled.cs:1821→1618）。OTA 転送（フラッシュ書き換え）はしないので文鎮化リスクは無いが、「完全無害・読み取り専用」ではなく「**非フラッシュ・バージョン照会のみ**」と呼ぶのが正確。
-
-手順:
-
-1. `hidapi` で VID=0x320F / PID=0x5055 / **UsagePage=0xFFEF** のインターフェースを開く。
-   - UsagePage 一致のみでは複数トップレベルコレクションを一意に選べない可能性がある（`usage` は元コードでも未使用）。列挙結果ごとに usage / report 長 / path / serial を記録し一意性を確認する。
-   - 出力レポート長が最低 64B、入力レポート長が最低 12B あることを確認する。
-2. バージョン照会レポートを送信（全長 = 出力レポート長で書く）: `[05][01 00 00][FF×29][00…]`。**`hid_write` の長さは 32 でなくレポート全長**。
-3. 応答 `[05 01 08 00 <ver4> <crc4>]` を受信できるか確認（タイムアウト・最大応答件数・切断時処理を実装）。
-   - **report_id の扱い**: Windows 受信バッファは先頭 `0x05`。macOS/hidapi では read 結果に report_id が含まれるか否かが API 依存。両解釈を曖昧に自動受理せず、実測で先頭バイト構成を記録して判定すること。
-
-このツールで**実証できること**: デバイス選択が正しい／出力レポート送信が通る／バージョン応答を受信でき、そのバイト配置（`05 01 08 00 …`）が読解どおり。
-このツールで**実証できないこと**: START/DATA の ACK 頻度・内容・遅延、END 完了応答（`05 02 03 00 06 FF 00`）の挙動。これらは②実装時に別途検証が要る。
-（注: バージョン応答は 8B ペイロードを持つ「応答」であり、OTA データ転送時の「ACK」とは別物。）
-
----
-
-## 11. 未確定事項・要検証
-
-1. `OutputReportByteLength` / `InputReportByteLength` の実値（実機HID caps依存。レポートの総長・パディング量に影響）。
-2. ACK が「1送信=1入力レポート」で返る前提の妥当性（DATA中のACK内容は未検査）。
-3. `report_id` が出力・入力で同一(5)か。入力レポートの先頭バイトがreport_idか否か（hidapi ではreport_id有無で読み取りバッファ解釈が変わる）。
-4. START ペイロード `0xFF01`（一般的Telinkは0xFF00の例が多い）の差異が機種固有仕様か。
-   - **2026-10-21 解決**: 括弧内の前提は誤り。Telink の OTA 定義では `0xFF00` が VERSION、`0xFF01` が START（legacy）で、機種固有ではない（§14）。
-5. 末尾チャンクのパディング（0xFF）と `sen[1]` 未計上の余剰パケット破棄ロジックの解釈が正しいか。
-6. バージョン照会 `WRITE(len=32)` と OTA `WRITE(len=OutputReportByteLength)` で len 指定が異なる点の影響。
-7. UsagePage一致のみで対象インターフェースを一意に選べるか（同一VID/PIDで複数コレクションがある場合）。
-
----
-
-## 12. 独立検証の結果（2026-07-11）
-
-逆コンパイル済み C# とバイナリを用いて独立に再照合した。**Critical 指摘なし。核心は全て一致で確認済み。**
-
-### 再計算で一致を確認（テストベクタは正しい）
-- `source_bin_size = 128628 (0x1F674)`、パディング後チャンク数 `8040`
-- CRC: index 0=`0xCC80` / index 1=`0x11B1` / index 8039=`0xC487` … 仕様書と一致
-- END payload `02 FF 67 1F 99 E0`（last=0x1F67, inv=0xE099）… 一致
-- 本体末尾CRC `A4 0F 02 01` = LE `0x01020FA4` … 一致
-
-### 指摘を受けて本ドキュメントに反映済みの修正
-- §4/§4.1: 「0埋め」は誤り。OTA は 0xFF 埋め、バージョン照会は途中まで0xFF＋以降0。`len=32` はコピー長でありUSB書込長ではない（High）。
-- §4: 最小レポート長要件（出力≥64B / 入力≥12B）を明記（High）。
-- §2: IID `Mouse_USB_OTA` は未使用、画面の IID ラベルは UsagePage 由来（Medium）。
-- §10: ステップ①は「非フラッシュ・バージョン照会のみ」であり出力レポートは実送信する／report_id の hidapi 表現差／複数コレクション曖昧性／実証できること・できないこと、を明確化（Medium）。
-
-### 実装時に留意（設計へ反映する事項）
-- **ACK 前提の危険性（High）**: 元コードは `start_ota_flag!=0` の間、**入力レポートの内容（report_id・コマンド・長さ・順序）を検証せず**、失敗応答以外なら次パケットを送る（decompiled.cs:1560-1563）。単純な「WRITE→次read」を実装すると、古い応答・別用途の入力・重複レポートでも転送が進む。②実装では応答の妥当性（少なくとも report_id と形状）を検証してから進めること。
-- **コマンド階層（Low）**: 最上位コマンドは `1=バージョン照会` / `2=OTA` の2種。START/DATA/END は「OTA(=2)」内の形式・サブコマンド（START/END は sen[3..]=0xFF01/0xFF02 で区別、decompiled.cs:1663-1664/1716-1717）。「4コマンド」は便宜表現。
-- **macOS で開ける前提（Low）**: UsagePage 0xFFEF は確定だが、macOS の権限・排他・ドライバ取得・hidapi バックエンド挙動は Windows 逆コンパイルからは確定できない［推定］。ステップ①で実機確認する。
-
----
-
-## 13. ステップ①実機検証の結果（2026-07-12・IQUNIX MG65 実機で確認） ［確定・実機］
-
-有線モードの実機に対し macOS から検証。**プロトコル読解・デバイス選択・出力レポート送信・応答受信のすべてを実機で裏取り済み**。§10/§11 の未確定事項を以下のとおり解消した。
-
-### デバイス識別（実測）
-- OTA インターフェースは **`DevSrvsID:4295829249`（IORegistryEntryID=4295829249）**、UsagePage=0xFFEF。物理的には **interface 2** で、キーボード(0x0001/0x0006)・consumer(0x000C) など複数トップレベルコレクションと**同一インターフェースを共有**（同一 RegID）。
-- VIA が使う raw HID は別インターフェース（UsagePage=0xFF60, interface 1, 単独）。OTA とは別物。
-
-### macOS アクセス方式（§11-7／§12「macOS で開ける前提」への確定回答）
-- **hidapi(cython-hidapi) は使えない**: mac 既定で seize(排他)オープンするため、キーボード同居インターフェースで `IOHIDDeviceOpen(SeizeDevice)` が `kIOReturnNotPrivileged(0xE00002C1)` となり「open failed」。これが当初の誤診の原因だった。
-- **正解は IOKit 直叩き + `kIOHIDOptionsTypeNone`（非 seize）でオープン**。root 不要。システムが排他保持しているのは別インターフェース(interface 0, RegID …245)で、OTA インターフェース(RegID …249)は seize せず開ける。
-- **レポート送受信には TCC「入力監視(Input Monitoring)」権限が必須**。無いと `IOHIDDeviceSetReport` が `kIOReturnNotPermitted(0xE00002E2)`。ツールを起動するアプリ（Terminal.app 等）に入力監視を付与すれば非 root で送受信可能。**Ghostty など未付与のアプリからは送信不可**。
-- 実装は `version_query_iokit.py` を参照（IOHIDManager 列挙→RegID一致でデバイス特定→open(None)→SetReport(output,id=5)→InputReportCallback+RunLoop で受信）。
-
-### バージョン照会 応答（実測・§11-3「report_id の表現」への確定回答）
-```
-送信: SetReport(output, reportID=5, [05 01 00 00 FF×28 00...], 64B) -> 0x00000000 OK
-受信(input report): id=5, len=64, data = 05 01 08 00 00 00 00 00 f2 4b 1e 39 ff ff ff ff ...
-```
-- **入力バッファは report_id 込み表現**（先頭バイト=0x05）。§6 の `[05 01 08 00 <ver4> <crc4>]` に完全一致。
-- 現在デバイスに載っている FW: **Version=0x00000000 / CRC=0x391E4BF2**（.exe 同梱 `code_2M` の CRC 0x01020FA4 とは別ビルドなので不一致は正常）。
-
-### ステップ②実機書き込み 成功（2026-07-12・IQUNIX MG65 実機） ［確定・実機］
-- 動機: VIA 最新版でエラーが出るため V0120 へ更新。
-- `magi65_ota.py --flash` で全 8040 チャンクを送信し完走。**書き込み前 CRC=0x391E4BF2 → 書き込み後 CRC=0x01020FA4**（V0120 本体CRCと一致）を `--check` で確認し、更新成功を確定。
-- **ACK 挙動（実機観測）**: デバイスは受信レポートをそのままエコーバックする。START ACK=送信 START（`05 02 02 00 01 FF…`）、DATA#0 ACK=送信 DATA#0（`05 02 3C 00 …`）。「1送信=1入力レポート」のペーシング前提は実機で正しく機能。
-  - **注記（2026-07-26 追記）**: この完全一致エコーは**旧ファーム（CRC=0x391E4BF2）での挙動**である。書き込み後の V0120 では一部バイトがマスクされる（後述「V0120 での ACK 挙動の変化」）。
-- **END 完了応答（実機確認）**: `05 02 03 00 06 FF 00`（result=index6=0 → OTA Success）。§6 の読解と完全一致。
-- 上記により、以下「未実証」だった ACK・END 完了応答の挙動は実機で確認済み（NAK 形式は今回エラーが出なかったため依然未観測）。in-place/staged の別は、今回正常完了したため実害なく決着。
-
-### V0120 での ACK 挙動の変化（2026-07-26・同一実機） ［確定・実機］
-
-V0120 が載った状態（CRC=0x01020FA4）で同一イメージの `--flash` を再実行したところ、**DATA#0 の ACK エコー不一致で中止（code=11）**した。観測用スクリプトで生バイトを取得した結果は以下。
+### 6.3 結果応答（END の完了、および失敗）
 
 ```
-DATA#0 送信 offset 46: 4b     ← body[32]。Telink ブートマジック "KNLT" の先頭バイト
-DATA#0 応答 offset 46: ff
+05 02 03 00 | 06 FF | <code>            # 0xFF06（LE）= CMD_OTA_RESULT
 ```
 
-- 応答は 7.3ms で返っており、タイムアウトではない。**64 バイト中この 1 バイトのみが `0xFF` に置換**され、他 63 バイトは完全一致。
-- START の ACK は完全一致。version 照会・START・DATA#0 のいずれでも余分な入力レポートは観測されず、「1送信=1入力レポート」の前提は維持されている。
-- 解釈［推定・信頼度高］: OTA 完走まで新イメージを起動対象と認識させないため、ブートマジックを未書き込み（`0xFF`）のまま保持し、格納内容をそのままエコーしている。
-  - **2026-10-21 追記**: デバイス側ファームのコードで確認した。DATA の書き込み処理が body[0x20] の "KNLT" を確かめ、先頭 1 バイトを `0xFF` にしてから書く（§14）。
-- **OTA 応答はデバイス側ファームの実装であり、版によって変わる**。上記 2026-07-12 の完全一致エコーは旧ファームでの観測であって、V0120 には当てはまらない。
-- 公式ツールは ACK 内容を一切検証しない（本節「ACK 前提の危険性（High）」参照）ため、この差異の影響を受けない。厳密なエコー照合を行う本ツールだけが停止した。
-- **対応**: `ack_is_echo` に `maskable_ranges` を追加し、DATA のデータ部（report offset `6+20k` から `CHUNK` バイト、k=パケット番号）に限り `0xFF` への置換を許容。フレームヘッダ・パケット index・パケット CRC は厳密照合を維持し、古い応答・重複レポート・順序ずれの検出能力は保つ。
-- **検証（2026-07-26・同一実機で書き込み完走）**: 上記対応を入れて `--flash` を再実行し、V0120 から V0120 への同一イメージ上書きが完走した。
-  - マスクは**全 2680 レポート中 1 バイトのみ**（`DATA idx=0 offset=46(body[32])`）。ブートマジック以外はマスクされない。
-  - END 完了応答は V0120 でも `05 02 03 00 06 FF 00`（`[PASS] OTA Success`）。旧ファームから変わっていない。
-  - 書き込み後の再列挙・CRC 照合も通過（`0x01020FA4`）。
-  - これにより、V0120 で変わっていたのは **DATA ACK のブートマジック 1 バイトのみ**と確定した。
-- **CRC 照合の限界（この検証について）**: 書き込み前後とも CRC は `0x01020FA4` であり、同一イメージ上書きでは CRC 一致は「書けたこと」の証明にならない。実際の証拠は、全 8040 チャンクの ACK 一致と END の完了応答である。
-
-### 未実証（②書き込み実装で検証が要る事項・据え置き）
-- START/DATA/END の ACK 頻度・内容・遅延、END 完了応答 `05 02 03 00 06 FF 00` の挙動（§10 記載どおり①では実証不可）。
-- `OutputReportByteLength`/`InputReportByteLength` の実値（今回 64B 固定で送受信は成立したが、DATA 最大3パケット時の下限確認は②で）。
-- **文鎮化リスクは②で初めて発生する**（①はフラッシュ非書換）。復旧用ブートローダの有無は依然未確認。
-  - **2026-10-21 追記**: デュアルバンク方式と確認（§14）。
-
-### ステップ②書き込みツールの実装状況（2026-07-12・ドライランまで）
-- 本ツールは §7 のシーケンス（START→DATA→END）を IOKit 直叩き（§13 の open(None) 方式）で送信する。デバイス選択は IOKit の `DeviceUsagePairs` 列挙で 0xFFEF を特定して open する。
-- ペイロード/レポート組み立ては純粋関数化し、ビルダーのテスト が §8 の既知ベクタ（CRC・addr・START/DATA/END・パディング）に一致することを検証。さらに全 8040 パケットの addr/data/CRC を網羅照合（全 PASS）。
-- 逆コンパイル C# の `ota_write()` ループと突き合わせ、境界（index 8039 で停止・超過パケット破棄）と END（last=0x1F67/inv=0xE099）が byte 単位で一致することを確認。
-- 転送ループを `run_transfer()` に分離し、擬似デバイスで制御フロー（START 1回→DATA 2680レポート=全8040チャンクを昇順で過不足なく→END→完了判定、ACK 不正時の即中止）を 転送のテスト で検証（実機不要・全 PASS）。
-- `--flash` は `caffeinate` を内蔵起動し転送中のスリープ/ディスプレイ休止を抑止する。
-- **安全ゲート**: 既定はドライラン（デバイス非接触）。`--check` は非フラッシュ疎通確認。`--flash` は `--i-understand-brick-risk` フラグ＋対話で大文字 `FLASH` 入力の二重確認が必須。
-- **実書き込みは未実行**（ユーザーの明示 Go 待ち）。高強度コードレビューを実施し、CONFIRMED 正確性バグ（破損/切り詰めファームのサイレント受理、report_len<64 のサイレント肥大化、size=0 での START 後クラッシュ）を修正済み。回帰テスト追加済み。
-- **ACK 検証の既知の限界**: DATA 転送中の ACK/NAK 内容フォーマットは未解析（実機観測でのみ判明）。実書き込み時に観測し NAK 形式が判明したら判定を厳格化すること。
-  - **注記（2026-07-26 追記）**: ここで予定していた「START/DATA ACK と END 応答の生バイトダンプ」は実装されなかった。代わりに、`run_transfer` が ACK のデータ部で 0xFF にマスクされたバイトを検出し、初回位置と合計バイト数をログに出す（「V0120 での ACK 挙動の変化」を参照）。NAK 形式は依然として未観測。
-  - **注記（2026-10-21 追記）**: NAK の形式はデバイス側ファームのコードで確定した（§14）。実機では未観測のまま。
-
-### 実 HID レポート長（§11-1 の未確定点の確定・2026-07-12 実機実測）
-- OTA デバイス（RegID 4295829249）の IOKit プロパティ: **MaxOutputReportSize=64 / MaxInputReportSize=64 / MaxFeatureReportSize=64**（open 不要のプロパティ読みで取得）。
-- 既定 report_len=64 が実機と一致。`magi65_ota.py` は `--flash` 時に report_len と MaxOutputReportSize の一致を検証し、不一致なら書き込みを中止する。
-
-### 独立検証（第2回）の結果（2026-07-12・実装＋解析の再検証）
-逆コンパイル C# と code_2M.bin を用いて独立に再照合した。**§3〜§8・crc16・8040パケット境界（index0=0xCC80/index1=0x11B1/index8039=0xC487）・END 値・独立再計算値はすべて「一致」で確認。Critical ゼロ。** ビルダー純粋関数も一致判定。
-
-指摘（いずれも「START 送信後に転送が中断して未完了化する」経路の防御。実装済み）:
-- High: 16-bit index を超える巨大イメージを START 前に拒否（`extract_firmware` でチャンク数>65536 を例外化）。
-- High: 本体末尾CRC が 0/0xFFFFFFFF のイメージを START 前に拒否（`check_bin_is_ok` 相当を再現）。
-- High: ACK 待機が keyboard 同居インターフェース由来の無関係な入力レポート（キー入力等）で誤終了しないよう、report_id=5 以外は無視して待機継続（コールバックでフィルタ）。
-- Medium: report_len を実 MaxOutputReportSize と照合し不一致ならフラッシュ中止。
-
-これらの回帰テストは `test_ota_builder.py`（末尾CRC無効・16-bit超過の拒否）に追加済み。
-
-**再レビュー（同日・上記修正の検証）**: 4修正はすべて有効・退行なし、解析(§3〜§8)とビルダーの一致も維持と確認。追加で 2 件の START 前検証の穴を指摘・修正:
-- High: `size < 4` のイメージは末尾CRCスライスがヘッダに食い込むため無条件拒否（High#2 修正の詰め残し）。
-- Medium: `MaxOutputReportSize` が取得不能(None/0)な場合も「検証不能」として書き込み中止（`flash_report_len_ok()` に集約、取得失敗＝不許可）。
-
-いずれも異常入力・異常環境のみに関わり正常運用パス（128628 byte・正規CRC・64byte レポート）には影響しない。回帰テスト追加済み（size<4 拒否、report長判定）。
-
----
-
-## 14. デバイス側ファームの OTA 処理（2026-10-21・V0121 の静的解析） ［確定・コード］
-
-公式 updater（`MG65-CS0164-V0121-20260302.exe`）から抽出したファーム本体を Ghidra 12.1.2 で解析した。
-言語は `RISCV:LE:32:AndeStar_v5`、ロードアドレスは `0x20000000`（ファーム内の分岐表が `0x2001xxxx` を指すため）。
-関数アドレスは V0121 のもの。実機への書き込みを伴う検証（NAK を意図的に起こすなど）はしていない。
-
-### コマンド
-
-OTA パケットの index が `0xFF00` 未満なら DATA、以上ならコマンドとして扱う（`0x20017d58`）。
-値は Telink の OTA 定義（`ota.h`）と一致する。
-
-| 値 | 名前 | 本ツール |
-|---|---|---|
-| `0xFF00` | VERSION | 未使用 |
-| `0xFF01` | START（legacy） | 使用 |
-| `0xFF02` | END | 使用 |
-| `0xFF03` | START_EXT（版の比較あり） | 未使用 |
-| `0xFF04` | FW_VERSION_REQ | 未使用 |
-| `0xFF06` | RESULT（デバイス→ホスト） | 完了応答として受信 |
-
-### 結果応答（NAK を含む）
-
-失敗すると状態を記録し（`0x20015484`）、`{0xFF06 (LE), code, 0}` を送る（`0x20018e44`）。
-成功時の完了応答 `05 02 03 00 06 FF 00` と同じ形で、`code` だけが変わる。
-
-| code | 名前 | ファーム内で返す条件 |
+| code | 名前 | デバイスが返す条件 |
 |---|---|---|
 | 0 | SUCCESS | |
 | 1 | DATA_PACKET_SEQ_ERR | DATA の index が前回 + 1 でない |
@@ -450,25 +196,98 @@ OTA パケットの index が `0xFF00` 未満なら DATA、以上ならコマン
 | 7 | FW_CHECK_ERR | イメージ全体の CRC 不一致 |
 | 8 | VERSION_COMPARE_ERR | START_EXT で版の比較に失敗 |
 | 9 | PDU_LEN_ERR | パケット長が不正 |
-| 10 | FIRMWARE_MARK_ERR | body[0x20..0x23] に "KNLT" が無い |
+| 10 | FIRMWARE_MARK_ERR | body[0x20..0x23] に `"KNLT"` が無い |
 | 11 | FW_SIZE_ERR | イメージサイズが `0x4000` 未満、または上限を超える |
 
-- 失敗を記録したあとは、以降の OTA パケットを処理しない。再試行はキーボードを抜き差し（再起動）してから行う［推定］
-- 本ツールは ACK のエコー照合が崩れた時点で中止するので、NAK を受けても先へ進まない。`code` の表示は未実装
+- 成功（code 0）は実機で確認済み。失敗の応答は実機では観測しておらず、デバイス側ファームのコードから読んだもの
+- updater は `05 02 03 00 06 FF` に続く code が 0 なら成功、それ以外なら失敗と表示する
+
+---
+
+## 7. 転送シーケンス
+
+```
+open HID (VID=0x320F, PID=0x5055, UsagePage=0xFFEF)   # 非排他で開く
+send START                → ACK を待つ
+for each 3 チャンク:
+    send DATA              → ACK を待つ（中身を照合する）
+send END                  → 結果応答を待つ（code 0 で成功）
+再接続後にバージョン照会し、crc が送ったイメージの末尾 CRC と一致することを確かめる
+```
+
+---
+
+## 8. 検証用テストベクタ（V0120 の `code_2M` から算出） ［確定］
+
+body の先頭 16 バイト: `25 a0 00 00 00 00 5d 02 00 00 00 00 00 00 00 00`
+
+| index | CRC16 | 20 バイトのパケット（hex） |
+|---|---|---|
+| 0 | `0xCC80` | `000025a0000000005d020000000000000000 80cc` |
+| 1 | `0x11B1` | `0100000000000000000074f6010000000000 b111` |
+| 8039 | `0xC487` | `671fa40f0201ffffffffffffffffffffffff 87c4` |
+
+- END のペイロード: `02 FF 67 1F 99 E0`（last = `0x1F67`、inv = `0xE099`）
+- index 8039 のデータの先頭に本体の末尾 CRC `a4 0f 02 01`（`0x01020FA4`）が現れる
+
+---
+
+## 9. デバイス側の OTA 処理（V0121 の静的解析） ［確定］
+
+Ghidra で、言語 `RISCV:LE:32:AndeStar_v5`、ロードアドレス `0x20000000` として解析した。関数アドレスは V0121 のもの。
+
+| 関数 | 役割 |
+|---|---|
+| `0x20017d58` | OTA パケットの処理。index が `0xFF00` 未満なら DATA、以上ならコマンド |
+| `0x20016370` | DATA の flash 書き込みと読み返し |
+| `0x2000f952` | END 後の確定処理 |
+| `0x20015484` / `0x20018e44` | 失敗の記録と結果応答の送信 |
+
+### コマンド
+
+| 値 | 名前 | 公式 updater / 本ツール |
+|---|---|---|
+| `0xFF00` | VERSION | 使わない |
+| `0xFF01` | START（legacy） | 使う |
+| `0xFF02` | END | 使う |
+| `0xFF03` | START_EXT（版の比較あり） | 使わない |
+| `0xFF04` | FW_VERSION_REQ | 使わない |
+| `0xFF06` | RESULT（デバイス → ホスト） | 受信する |
 
 ### デュアルバンクと起動フラグ
 
-- DATA の書き込み（`0x20016370`）: body[0x20] を含むチャンクで "KNLT" を確かめ（無ければ code 10）、先頭 1 バイトを `0xFF` にしてから書き込み先のバンクへ書く。§13「V0120 での ACK 挙動の変化」で観測した 1 バイトのマスクはこの処理による
-- END 後の確定処理（`0x2000f952`）: "KNLT" と全長を確かめ、書き込み先のバンクの +0x20 に `0x4B`（'K'）を書いて起動フラグを有効にする
-- このため、END の確定処理が終わるまで新しいイメージは起動対象にならない。**転送が途中で止まっても旧ファームで起動する**。専用のブートローダ（DFU 等）は無い
+- DATA の書き込みでは、body[0x20] を含むチャンクで `"KNLT"` を確かめ（無ければ code 10）、先頭 1 バイトを `0xFF` にしてから書き込み先のバンクへ書く
+- END 後の確定処理で `"KNLT"` と全長を確かめ、書き込み先のバンクの +0x20 に `0x4B`（`'K'`）を書いて起動フラグを有効にする
+- このため、確定処理が終わるまで新しいイメージは起動対象にならない。転送が途中で止まっても旧ファームで起動する。DFU のような専用のブートローダは無い
+
+### 版の比較
+
+版の比較は START_EXT（`0xFF03`）と FW_VERSION_REQ（`0xFF04`）の経路にだけある。legacy START（`0xFF01`）では比較しないので、古い版への書き戻しは拒否されない。
+
+### 失敗後の状態
+
+失敗を記録すると、以降の OTA パケットは処理されない。再試行は、キーボードを抜き差し（再起動）してから行う［推定］。
+
+---
+
+## 10. 前提条件・注意
+
+- キーボードを USB 有線モードにする（公式手順: `FN + T` / `FN + 5`）［確定］
+- 書き込むとキーマップは初期化される。事前に VIA で保存しておく［確定］
+- 書き込み中に電源やケーブルを切らない。デュアルバンク方式なので旧ファームで起動する見込みだが、中断を実機では試していない［推定］
+
+---
+
+## 11. 未確認事項
+
+- 失敗の結果応答（code 1〜11）を実機では観測していない
 - バンクのアドレスは実行時に決まる値で、静的には読めていない
+- 失敗後、抜き差しせずに再試行できるか
+- `0xFF1C/0x92` のインターフェースの用途
 
-### 版の比較（ダウングレード）
+---
 
-版の比較は START_EXT（`0xFF03`）と FW_VERSION_REQ（`0xFF04`）の経路にだけある。
-本ツールと公式ツールが使う legacy START（`0xFF01`）では比較しないので、**古い版への書き戻しは拒否されない**。
-
-### 出典
+## 出典
 
 - Telink `ota.h`（コマンド値と結果コード）: https://android.googlesource.com/platform/hardware/telink/atv/refDesignRcu/+/refs/heads/master/stack/ble/service/ota/ota.h
 - jbonadiman/telink-usb-ota（同系統の USB HID OTA。デュアルバンクと起動フラグの扱い）: https://github.com/jbonadiman/telink-usb-ota
