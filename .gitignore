@@ -8,6 +8,6 @@ __pycache__/
 exe_here/*
 !exe_here/.gitkeep
 
-# 解析資料（旧 magi65_fw）。ファームウェアのバイナリと Windows 製 OTA ツールの
+# 解析資料。ファームウェアのバイナリと Windows 製 OTA ツールの
 # 逆コンパイル結果を含むため追跡しない
 reference/

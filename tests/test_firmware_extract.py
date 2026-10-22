@@ -33,7 +33,7 @@ class ExtractRejectTest(unittest.TestCase):
             fw.extract_from_exe(self._tmp("x.exe", b"MZ" + b"\x00" * 1000))
 
     def test_reject_zip_multiple_exe(self):
-        # ZIP 内に EXE が2個 → 拒否（レビュー指摘 Medium#7）
+        # ZIP 内に EXE が2個 → 拒否
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as z:
             z.writestr("a.exe", b"MZ")

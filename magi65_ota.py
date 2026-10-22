@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Magi65 OTA CLI（spec §4 準拠）。
+"""Magi65 OTA CLI。
 
 --exe から抽出・検証を行い、モードに応じて動作する。
 デフォルト（フラグなし）はドライラン専用で、実機には一切触れない。
---check / --flash は実機接続が必要（Task 8 で実地検証）。
+--check / --flash は実機接続が必要。
 """
 import argparse
 import os
@@ -158,7 +158,6 @@ def _post_flash_verify(args, expected_crc, retry_seconds=10.0, interval=1.0):
     CRC 不一致は即 FAIL にせず、期限（retry_seconds）内は再列挙→再open→
     再照会を繰り返す。一度でも期待CRCと一致すれば即成功。期限切れまで
     一度も一致しなければ FAIL とし、最後に観測した CRC を提示する。
-    （retry_seconds/interval の既定値は Task 8 の実機検証で調整の余地あり）
     """
     print(f"[*] 転送成功。デバイス再列挙で CRC を照合します（期待値=0x{expected_crc:08X}）。")
     deadline = time.time() + retry_seconds

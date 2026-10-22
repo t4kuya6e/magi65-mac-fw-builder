@@ -1,12 +1,10 @@
-"""転送制御（transfer control flow）。
-Task 5: START/DATA/END の送受信と ACK 検証、バージョン照会ゲート。
-"""
+"""転送制御。START/DATA/END の送受信と ACK 検証、START 前のバージョン照会。"""
 from .constants import REPORT_ID, CHUNK
 from .firmware import (start_report, data_report, end_report, version_query_report,
                        data_payload_ranges)
 
 def parse_version(data):
-    # 完全な固定ヘッダを要求（レビュー指摘 High#5）。report_id 込み: 05 01 08 00 <ver4> <crc4>
+    # 固定ヘッダをすべて要求する。report_id 込み: 05 01 08 00 <ver4> <crc4>
     if len(data) >= 12 and data[0] == 0x05 and data[1] == 0x01 and data[2] == 0x08 and data[3] == 0x00:
         return int.from_bytes(data[4:8], "little"), int.from_bytes(data[8:12], "little")
     # report_id 剥がし: 01 08 00 <ver4> <crc4>
@@ -15,7 +13,7 @@ def parse_version(data):
     return None
 
 def parse_completion(data):
-    # 確定形式の固定バイトをすべて検証（レビュー指摘 High#4）: 05 02 03 00 06 FF <result>
+    # 固定バイトをすべて検証する: 05 02 03 00 06 FF <result>
     if len(data) >= 7 and data[0] == 0x05 and data[1] == 0x02 and data[2] == 0x03 \
             and data[3] == 0x00 and data[4] == 0x06 and data[5] == 0xFF:
         return data[6]
@@ -27,12 +25,12 @@ def parse_completion(data):
 
 def ack_is_echo(sent: bytes, resp, maskable_ranges=()) -> bool:
     # ACK は送信レポート全体のエコー（OTA_PROTOCOL.md §6.2）。
-    # rid==5（レビュー指摘 Medium2, END/version-gate と対称）、送信全長が一致（レビュー指摘 High#1）を要求。
+    # rid==5（END・バージョン照会と同じ）と、送信全長以上の長さを要求する。
     # maskable_ranges（DATA のデータ部）に限り、デバイスが 0xFF を返すことを許容する。
-    # OTA 完走までブートマジックを未書き込み（0xFF）のまま保持する挙動への対応
-    # （V0120 以降の実機挙動。OTA_PROTOCOL.md §6.2 と §9 を参照）。
-    # フレームヘッダ・パケット index・パケット CRC は厳密照合を維持し、
-    # 古い応答・重複レポート・順序ずれは従来どおり検出する。
+    # デバイスは OTA 完走までブートマジックを未書き込み（0xFF）のまま保持して返すため
+    # （V0120 以降。OTA_PROTOCOL.md §6.2 と §9）。
+    # フレームヘッダ・パケット index・パケット CRC は厳密に照合し、
+    # 古い応答・重複レポート・順序ずれを検出する。
     if resp is None:
         return False
     rid, data = resp
@@ -65,8 +63,8 @@ def run_transfer(dev, body, report_len, log=print):
         # デバイスに一切送信する前に中止する。
         raise ValueError(f"body length {len(body)} is not a multiple of CHUNK({CHUNK})")
     n_chunks = len(body) // CHUNK
-    # ReportID 能力の実地確認（spec High#1 残）: START 前にバージョン照会往復。
-    # rid==5 かつ完全な固定ヘッダの応答のみ合格（レビュー指摘 High#5）。
+    # START 前にバージョン照会を 1 往復し、report_id=5 の入出力ができることを実地に確かめる。
+    # rid==5 かつ固定ヘッダが揃った応答だけを合格とする。
     vq = version_query_report(report_len)
     vresp = dev.send_and_wait(vq)
     if not vresp or vresp[0] != REPORT_ID or parse_version(vresp[1]) is None:
@@ -104,7 +102,7 @@ def run_transfer(dev, body, report_len, log=print):
     if not resp:
         log("[FAIL] END 応答なし。")
         return 12
-    if resp[0] != REPORT_ID:                       # version-gate と対称に rid を検証（レビュー指摘 Medium#3）
+    if resp[0] != REPORT_ID:                       # バージョン照会と同じく rid を検証
         log(f"[FAIL] END 応答の report_id が不正: {resp[0]}")
         return 15
     result = parse_completion(resp[1])

@@ -1,7 +1,4 @@
-"""ビルダー純粋関数（firmware builder pure functions）。
-Task 2: ポート from mac_ota/ota_flash.py
-Task 3: .exe/.exe.zip からの .NET マネージドリソース抽出（extract_from_exe/parse_param）
-"""
+"""updater（.exe/.exe.zip）からのファーム抽出、レポートを組み立てる純粋関数、検証ゲート。"""
 import os
 import re
 import struct
@@ -78,7 +75,7 @@ def flash_report_len_ok(report_len, max_output) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Task 3: .exe/.exe.zip から .NET マネージドリソース(.resources)を抽出する
+# .exe/.exe.zip から .NET マネージドリソース(.resources)を抽出する
 # ---------------------------------------------------------------------------
 
 _RESOURCES_MAGIC = b"\xce\xca\xef\xbe"  # 0xBEEFCACE (LE)
@@ -251,7 +248,7 @@ def parse_param(param_128k):
 
 
 # ---------------------------------------------------------------------------
-# Task 4: 検証ゲート
+# 検証ゲート
 # ---------------------------------------------------------------------------
 
 def validate_firmware(code_2m: bytes) -> None:

@@ -1,6 +1,5 @@
 """IOKit HID 列挙・OtaDevice（macOS / IOKit 直叩き）。
-Task 6: mac_ota/ota_flash.py の _load_iokit/OtaDevice を移設し、
-外部ライブラリでの列挙(_discover_ota_regid)を IOKit の DeviceUsagePairs 走査へ置換。
+列挙は IOKit の DeviceUsagePairs を走査して行う。
 ゼロ依存（ctypes のみ、外部 HID ライブラリ不使用）。
 """
 import ctypes
